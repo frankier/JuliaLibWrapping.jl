@@ -34,10 +34,65 @@
   invisible(NULL)
 }
 
+# A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
+# above guarantees the field is where the library put it.
+.jlr_status_message <- function(status) {
+  bytes <- as.raw(status$message)
+  nul <- which(bytes == as.raw(0L))
+  if (length(nul) > 0L) {
+    bytes <- bytes[seq_len(nul[[1L]] - 1L)]
+  }
+  rawToChar(bytes)
+}
+
+# The R condition class for a `JLWStatus` code. An unknown code is a plain
+# `jlw_error`.
+.jlr_status_class <- function(code) {
+  switch(
+    as.character(code),
+    "1" = "jlw_error",
+    "2" = "jlw_argument",
+    "3" = "jlw_dimension",
+    "4" = "jlw_inexact",
+    "5" = "jlw_bounds",
+    "jlw_error"
+  )
+}
+
+.jlr_abort <- function(code, msg) {
+  stop(structure(
+    class = c(.jlr_status_class(code), "jlw_error", "error", "condition"),
+    list(message = msg, call = NULL, code = code)
+  ))
+}
+
+# Raise on a failed status; a zero code is the only success.
+.jlr_check_status <- function(status) {
+  if (status$code != 0L) {
+    .jlr_abort(status$code, .jlr_status_message(status))
+  }
+  invisible(NULL)
+}
+
 # Foreign C aggregates, in dependency order.
 cstruct("Handle{p}h;")
 .jlr_check_layout("Handle", size = 8L, alignment = 8L,
                    offsets = c(h = 0L))
+
+# Low-level entrypoint bindings. Each signature string is generated
+# from the ABI; a mismatch would crash the R process rather than raise.
+.jlr_zero_first <- function(p, n) {
+  dyncall(get("zero_first", envir = .jlr_syms), "pi)v", p, n)
+  invisible(NULL)
+}
+
+.jlr_next_chunk <- function(h) {
+  dyncall(get("next_chunk", envir = .jlr_syms), "<Handle>)p", h)
+}
+
+.jlr_chunk_table <- function() {
+  dyncall(get("chunk_table", envir = .jlr_syms), ")p")
+}
 
 # The library the package loads, and where to find it.
 .jlr_library_basename <- "libprimitives"
