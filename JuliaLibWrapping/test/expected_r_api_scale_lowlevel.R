@@ -99,6 +99,76 @@ cstruct("JLWResult_CVector_owned_Float64{<JLWStatus><CVector_owned_Float64>}stat
 .jlr_check_layout("JLWResult_CVector_owned_Float64", size = 280L, alignment = 8L,
                    offsets = c(status = 0L, value = 264L))
 
+.jlr_CVector_borrowed_Float64_arg <- function(x) {
+  .jlr_n <- length(x)
+  .jlr_dims <- as.integer(.jlr_n)
+  .jlr_data <- as.externalptr(as.double(x))
+  .jlr_carrier <- cdata("CVector_borrowed_Float64")
+  .jlr_carrier$dims <- .jlr_dims
+  .jlr_carrier$data <- .jlr_data
+  .jlr_carrier
+}
+
+.jlr_CVector_borrowed_Float64_ret <- function(s) {
+  .jlr_dims <- as.integer(s$dims)
+  .jlr_n <- as.integer(prod(.jlr_dims))
+  .jlr_out <- numeric(.jlr_n)
+  for (.jlr_i in seq_len(.jlr_n)) {
+    .jlr_out[.jlr_i] <- unpack(s$data, (.jlr_i - 1L) * 8, "d")
+  }
+  if (length(.jlr_dims) > 1L) {
+    dim(.jlr_out) <- .jlr_dims
+  }
+  .jlr_out
+}
+
+.jlr_CVector_owned_Float64_ret <- function(s) {
+  on.exit(.jlr_jlw_free(s$data), add = TRUE)
+  .jlr_dims <- as.integer(s$dims)
+  .jlr_n <- as.integer(prod(.jlr_dims))
+  .jlr_out <- numeric(.jlr_n)
+  for (.jlr_i in seq_len(.jlr_n)) {
+    .jlr_out[.jlr_i] <- unpack(s$data, (.jlr_i - 1L) * 8, "d")
+  }
+  if (length(.jlr_dims) > 1L) {
+    dim(.jlr_out) <- .jlr_dims
+  }
+  .jlr_out
+}
+
+.jlr_CString_borrowed_arg <- function(x) {
+  .jlr_bytes <- charToRaw(enc2utf8(as.character(x)))
+  .jlr_carrier <- cdata("CString_borrowed")
+  .jlr_carrier$length <- length(.jlr_bytes)
+  .jlr_carrier$data <- as.externalptr(.jlr_bytes)
+  .jlr_carrier
+}
+
+.jlr_CString_borrowed_ret <- function(s) {
+  .jlr_bytes <- raw(as.integer(s$length))
+  for (.jlr_i in seq_len(length(.jlr_bytes))) {
+    .jlr_bytes[.jlr_i] <- as.raw(unpack(s$data, .jlr_i - 1L, "C"))
+  }
+  .jlr_nul <- which(.jlr_bytes == as.raw(0L))
+  if (length(.jlr_nul) > 0L) {
+    .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]
+  }
+  rawToChar(.jlr_bytes)
+}
+
+.jlr_CString_owned_ret <- function(s) {
+  on.exit(.jlr_jlw_free(s$data), add = TRUE)
+  .jlr_bytes <- raw(as.integer(s$length))
+  for (.jlr_i in seq_len(length(.jlr_bytes))) {
+    .jlr_bytes[.jlr_i] <- as.raw(unpack(s$data, .jlr_i - 1L, "C"))
+  }
+  .jlr_nul <- which(.jlr_bytes == as.raw(0L))
+  if (length(.jlr_nul) > 0L) {
+    .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]
+  }
+  rawToChar(.jlr_bytes)
+}
+
 # Low-level entrypoint bindings. Each signature string is generated
 # from the ABI; a mismatch would crash the R process rather than raise.
 .jlr_mylib_scale <- function(x, factor, label) {
@@ -113,7 +183,7 @@ cstruct("JLWResult_CVector_owned_Float64{<JLWStatus><CVector_owned_Float64>}stat
 }
 
 .jlr_jlw_free_strings <- function(p, n) {
-  dyncall(get("jlw_free_strings", envir = .jlr_syms), "*<CString_owned>l)v", p, n)
+  dyncall(get("jlw_free_strings", envir = .jlr_syms), "pl)v", p, n)
   invisible(NULL)
 }
 
