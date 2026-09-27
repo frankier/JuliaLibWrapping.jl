@@ -1542,6 +1542,7 @@ end
     end
 
     include("matlab.jl")
+    include("r.jl")
 
     @testset "ctuple recognizer" begin
         # Matches on the name prefix plus the one `values` field holding the
