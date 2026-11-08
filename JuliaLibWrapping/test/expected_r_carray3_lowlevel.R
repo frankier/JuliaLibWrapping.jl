@@ -5,51 +5,64 @@
 # rewritten on every build.
 
 # Symbol pointers, resolved once by `.onLoad`.
-.jlr_syms <- new.env(parent = emptyenv())
+.jlr_syms <- base::new.env(parent = base::emptyenv())
+.jlr_types <- base::new.env(parent = base::baseenv())
+.jlr_dyncall <- base::evalq(function(address, signature, ...) {
+  result <- rdyncall::dyncall(address, signature, ...)
+  if (base::inherits(result, "struct")) {
+    base::attr(result, "typeinfo_env") <- base::environment(base::sys.function())
+  }
+  result
+}, envir = .jlr_types)
+.jlr_cdata <- function(name) {
+  result <- rdyncall::cdata(base::get(name, envir = .jlr_types))
+  base::attr(result, "typeinfo_env") <- .jlr_types
+  result
+}
 
 # Compare rdyncall's computed layout against the one the library was
 # compiled with. A divergence would otherwise misread every field silently,
 # so a mismatch stops the package from loading.
 .jlr_check_layout <- function(name, size, alignment, offsets) {
-  info <- get(name, envir = parent.frame())
-  actual <- as.integer(info$fields$offset)
-  names(actual) <- as.character(info$fields$name)
+  info <- base::get(name, envir = .jlr_types)
+  actual <- base::as.integer(info$fields$offset)
+  base::names(actual) <- base::as.character(info$fields$name)
   # `as.integer` drops a vector's names, so restore them before comparing.
-  expected <- as.integer(offsets)
-  names(expected) <- names(offsets)
-  if (info$size != size || info$align != alignment || !identical(actual, expected)) {
-    stop(
-      sprintf(
-        paste0(
+  expected <- base::as.integer(offsets)
+  base::names(expected) <- base::names(offsets)
+  if (info$size != size || info$align != alignment || !base::identical(actual, expected)) {
+    base::stop(
+      base::sprintf(
+        base::paste0(
           "%s: rdyncall computed size %d, alignment %d and offsets [%s], but ",
           "the library was compiled with size %d, alignment %d and offsets ",
           "[%s]; the generated bindings do not match this platform's ABI"
         ),
-        name, info$size, info$align, paste(actual, collapse = ", "),
-        size, alignment, paste(expected, collapse = ", ")
+        name, info$size, info$align, base::paste(actual, collapse = ", "),
+        size, alignment, base::paste(expected, collapse = ", ")
       ),
       call. = FALSE
     )
   }
-  invisible(NULL)
+  base::invisible(NULL)
 }
 
 # A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
 # above guarantees the field is where the library put it.
 .jlr_status_message <- function(status) {
-  bytes <- as.raw(status$message)
-  nul <- which(bytes == as.raw(0L))
-  if (length(nul) > 0L) {
-    bytes <- bytes[seq_len(nul[[1L]] - 1L)]
+  bytes <- base::as.raw(status$message)
+  nul <- base::which(bytes == base::as.raw(0L))
+  if (base::length(nul) > 0L) {
+    bytes <- bytes[base::seq_len(nul[[1L]] - 1L)]
   }
-  rawToChar(bytes)
+  base::rawToChar(bytes)
 }
 
 # The R condition class for a `JLWStatus` code. An unknown code is a plain
 # `jlw_error`.
 .jlr_status_class <- function(code) {
-  switch(
-    as.character(code),
+  base::switch(
+    base::as.character(code),
     "1" = "jlw_error",
     "2" = "jlw_argument",
     "3" = "jlw_dimension",
@@ -60,9 +73,9 @@
 }
 
 .jlr_abort <- function(code, msg) {
-  stop(structure(
-    class = c(.jlr_status_class(code), "jlw_error", "error", "condition"),
-    list(message = msg, call = NULL, code = code)
+  base::stop(base::structure(
+    class = base::c(.jlr_status_class(code), "jlw_error", "error", "condition"),
+    base::list(message = msg, call = NULL, code = code)
   ))
 }
 
@@ -71,41 +84,41 @@
   if (status$code != 0L) {
     .jlr_abort(status$code, .jlr_status_message(status))
   }
-  invisible(NULL)
+  base::invisible(NULL)
 }
 
 # `as.externalptr` needs a non-empty vector; the carriers' builders use this.
 .jlr_extptr <- function(x) {
-  as.externalptr(if (length(x) == 0L) as.raw(0L) else x)
+  rdyncall::as.externalptr(if (base::length(x) == 0L) base::as.raw(0L) else x)
 }
 
 # Foreign C aggregates, in dependency order.
-cstruct("CArray_borrowed_Float64_3{l[3]*d}dims data;")
+rdyncall::cstruct("CArray_borrowed_Float64_3{l[3]*d}dims data;", envir = .jlr_types)
 .jlr_check_layout("CArray_borrowed_Float64_3", size = 32L, alignment = 8L,
-                   offsets = c(dims = 0L, data = 24L))
+                   offsets = base::c(dims = 0L, data = 24L))
 
 .jlr_CArray_borrowed_Float64_3_arg <- function(x) {
-  .jlr_n <- length(x)
-  if (is.null(dim(x))) {
-    stop("expected a 3-D array")
+  .jlr_n <- base::length(x)
+  if (base::is.null(base::dim(x))) {
+    base::stop("expected a 3-D array")
   }
-  .jlr_dims <- as.integer(dim(x))
-  .jlr_data <- .jlr_extptr(if (typeof(x) == "double") x else as.double(x))
-  .jlr_carrier <- cdata("CArray_borrowed_Float64_3")
+  .jlr_dims <- base::as.integer(base::dim(x))
+  .jlr_data <- .jlr_extptr(if (base::typeof(x) == "double") x else base::as.double(x))
+  .jlr_carrier <- .jlr_cdata("CArray_borrowed_Float64_3")
   .jlr_carrier$dims <- .jlr_dims
   .jlr_carrier$data <- .jlr_data
   .jlr_carrier
 }
 
 .jlr_CArray_borrowed_Float64_3_ret <- function(s) {
-  .jlr_dims <- as.integer(s$dims)
-  .jlr_n <- as.integer(prod(.jlr_dims))
-  .jlr_out <- numeric(.jlr_n)
-  for (.jlr_i in seq_len(.jlr_n)) {
-    .jlr_out[.jlr_i] <- unpack(s$data, (.jlr_i - 1L) * 8, "d")
+  .jlr_dims <- base::as.integer(s$dims)
+  .jlr_n <- base::as.integer(base::prod(.jlr_dims))
+  .jlr_out <- base::numeric(.jlr_n)
+  for (.jlr_i in base::seq_len(.jlr_n)) {
+    .jlr_out[.jlr_i] <- rdyncall::unpack(s$data, (.jlr_i - 1L) * 8, "d")
   }
-  if (length(.jlr_dims) > 1L) {
-    dim(.jlr_out) <- .jlr_dims
+  if (base::length(.jlr_dims) > 1L) {
+    base::dim(.jlr_out) <- .jlr_dims
   }
   .jlr_out
 }
@@ -113,23 +126,23 @@ cstruct("CArray_borrowed_Float64_3{l[3]*d}dims data;")
 # Low-level entrypoint bindings. Each signature string is generated
 # from the ABI; a mismatch would crash the R process rather than raise.
 .jlr_sum3d <- function(a) {
-  dyncall(get("sum3d", envir = .jlr_syms), "<CArray_borrowed_Float64_3>)d", a)
+  .jlr_dyncall(base::get("sum3d", envir = .jlr_syms), "<CArray_borrowed_Float64_3>)d", a)
 }
 
 # The library the package loads, and where to find it.
 .jlr_library_basename <- "libcarray3"
 .jlr_library_env_var <- "LIBCARRAY3_R_LIBRARY"
-.jlr_symbols <- c(
+.jlr_symbols <- base::c(
   "sum3d"
 )
 
 .jlr_library_suffixes <- function() {
   if (.Platform$OS.type == "windows") {
     ".dll"
-  } else if (identical(Sys.info()[["sysname"]], "Darwin")) {
-    c(".dylib", ".so")
+  } else if (base::identical(base::Sys.info()[["sysname"]], "Darwin")) {
+    base::c(".dylib", ".so")
   } else {
-    c(".so", ".dylib")
+    base::c(".so", ".dylib")
   }
 }
 
@@ -137,9 +150,9 @@ cstruct("CArray_borrowed_Float64_3{l[3]*d}dims data;")
 # MATLAB gateway's `<LIBNAME>_MEX_LIBRARY` accepts. Return the first of
 # `base`, `base<suffix>` that exists, or `NULL`.
 .jlr_library_candidate <- function(base) {
-  for (candidate in paste0(base, c("", .jlr_library_suffixes()))) {
-    if (file.exists(candidate)) {
-      return(candidate)
+  for (candidate in base::paste0(base, base::c("", .jlr_library_suffixes()))) {
+    if (base::file.exists(candidate)) {
+      base::return(candidate)
     }
   }
   NULL
@@ -149,24 +162,24 @@ cstruct("CArray_borrowed_Float64_3{l[3]*d}dims data;")
 # juliac runtime stay where they were built, so a bundle's RUNPATH resolves
 # `libjulia` from inside the installed package.
 .jlr_library_dirs <- function(libname, pkgname) {
-  dirs <- character(0)
-  pkgdir <- system.file(package = pkgname, lib.loc = libname)
-  if (nzchar(pkgdir)) {
-    dirs <- c(dirs, pkgdir, dirname(pkgdir))
+  dirs <- base::character(0)
+  pkgdir <- base::system.file(package = pkgname, lib.loc = libname)
+  if (base::nzchar(pkgdir)) {
+    dirs <- base::c(dirs, pkgdir, base::dirname(pkgdir))
   }
   dirs
 }
 
 .jlr_resolve_library <- function(libname, pkgname) {
-  override <- Sys.getenv(.jlr_library_env_var, unset = "")
-  if (nzchar(override)) {
+  override <- base::Sys.getenv(.jlr_library_env_var, unset = "")
+  if (base::nzchar(override)) {
     found <- .jlr_library_candidate(override)
-    if (!is.null(found)) {
-      return(found)
+    if (!base::is.null(found)) {
+      base::return(found)
     }
-    stop(
-      sprintf(
-        paste0(
+    base::stop(
+      base::sprintf(
+        base::paste0(
           "could not find the %s shared library at %s, or beside that path ",
           "with a platform suffix; set %s to an explicit path"
         ),
@@ -175,60 +188,60 @@ cstruct("CArray_borrowed_Float64_3{l[3]*d}dims data;")
       call. = FALSE
     )
   }
-  tried <- character(0)
+  tried <- base::character(0)
   for (directory in .jlr_library_dirs(libname, pkgname)) {
-    for (suffix in c("", .jlr_library_suffixes())) {
-      candidate <- paste0(file.path(directory, .jlr_library_basename), suffix)
-      tried <- c(tried, candidate)
-      if (file.exists(candidate)) {
-        return(candidate)
+    for (suffix in base::c("", .jlr_library_suffixes())) {
+      candidate <- base::paste0(base::file.path(directory, .jlr_library_basename), suffix)
+      tried <- base::c(tried, candidate)
+      if (base::file.exists(candidate)) {
+        base::return(candidate)
       }
     }
   }
-  stop(
-    sprintf(
+  base::stop(
+    base::sprintf(
       "could not locate the %s shared library; tried %s; set %s to an explicit path",
-      .jlr_library_basename, paste(tried, collapse = ", "), .jlr_library_env_var
+      .jlr_library_basename, base::paste(tried, collapse = ", "), .jlr_library_env_var
     ),
     call. = FALSE
   )
 }
 
 .onLoad <- function(libname, pkgname) {
-  handle <- dynload(.jlr_resolve_library(libname, pkgname))
-  if (is.null(handle)) {
-    stop(
-      sprintf("could not load the %s shared library", .jlr_library_basename),
+  handle <- rdyncall::dynload(.jlr_resolve_library(libname, pkgname))
+  if (base::is.null(handle)) {
+    base::stop(
+      base::sprintf("could not load the %s shared library", .jlr_library_basename),
       call. = FALSE
     )
   }
-  assign(".jlr_handle", handle, envir = .jlr_syms)
+  base::assign(".jlr_handle", handle, envir = .jlr_syms)
   for (symbol in .jlr_symbols) {
-    pointer <- dynsym(handle, symbol)
-    if (is.null(pointer)) {
-      stop(
-        sprintf("could not resolve the exported symbol %s", symbol),
+    pointer <- rdyncall::dynsym(handle, symbol)
+    if (base::is.null(pointer)) {
+      base::stop(
+        base::sprintf("could not resolve the exported symbol %s", symbol),
         call. = FALSE
       )
     }
-    assign(symbol, pointer, envir = .jlr_syms)
+    base::assign(symbol, pointer, envir = .jlr_syms)
   }
-  loaded <- getOption("jlw.loaded_r_packages", character(0))
-  if (length(loaded) > 0L && !(pkgname %in% loaded)) {
-    warning(
-      sprintf(
-        paste0(
+  loaded <- base::getOption("jlw.loaded_r_packages", base::character(0))
+  if (base::length(loaded) > 0L && !(pkgname %in% loaded)) {
+    base::warning(
+      base::sprintf(
+        base::paste0(
           "loading %s into a process that already loaded %s; this package was ",
           "built without a private libjulia, so both packages resolve a single ",
           "Julia runtime and the first call into whichever did not initialize ",
           "it aborts the process. Rebuild with `privatize = true`, or compile ",
           "both APIs into a single juliac library."
         ),
-        pkgname, paste(loaded, collapse = ", ")
+        pkgname, base::paste(loaded, collapse = ", ")
       ),
       call. = FALSE
     )
   }
-  options(jlw.loaded_r_packages = unique(c(loaded, pkgname)))
-  invisible(NULL)
+  base::options(jlw.loaded_r_packages = base::unique(base::c(loaded, pkgname)))
+  base::invisible(NULL)
 }

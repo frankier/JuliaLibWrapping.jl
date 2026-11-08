@@ -5,51 +5,64 @@
 # rewritten on every build.
 
 # Symbol pointers, resolved once by `.onLoad`.
-.jlr_syms <- new.env(parent = emptyenv())
+.jlr_syms <- base::new.env(parent = base::emptyenv())
+.jlr_types <- base::new.env(parent = base::baseenv())
+.jlr_dyncall <- base::evalq(function(address, signature, ...) {
+  result <- rdyncall::dyncall(address, signature, ...)
+  if (base::inherits(result, "struct")) {
+    base::attr(result, "typeinfo_env") <- base::environment(base::sys.function())
+  }
+  result
+}, envir = .jlr_types)
+.jlr_cdata <- function(name) {
+  result <- rdyncall::cdata(base::get(name, envir = .jlr_types))
+  base::attr(result, "typeinfo_env") <- .jlr_types
+  result
+}
 
 # Compare rdyncall's computed layout against the one the library was
 # compiled with. A divergence would otherwise misread every field silently,
 # so a mismatch stops the package from loading.
 .jlr_check_layout <- function(name, size, alignment, offsets) {
-  info <- get(name, envir = parent.frame())
-  actual <- as.integer(info$fields$offset)
-  names(actual) <- as.character(info$fields$name)
+  info <- base::get(name, envir = .jlr_types)
+  actual <- base::as.integer(info$fields$offset)
+  base::names(actual) <- base::as.character(info$fields$name)
   # `as.integer` drops a vector's names, so restore them before comparing.
-  expected <- as.integer(offsets)
-  names(expected) <- names(offsets)
-  if (info$size != size || info$align != alignment || !identical(actual, expected)) {
-    stop(
-      sprintf(
-        paste0(
+  expected <- base::as.integer(offsets)
+  base::names(expected) <- base::names(offsets)
+  if (info$size != size || info$align != alignment || !base::identical(actual, expected)) {
+    base::stop(
+      base::sprintf(
+        base::paste0(
           "%s: rdyncall computed size %d, alignment %d and offsets [%s], but ",
           "the library was compiled with size %d, alignment %d and offsets ",
           "[%s]; the generated bindings do not match this platform's ABI"
         ),
-        name, info$size, info$align, paste(actual, collapse = ", "),
-        size, alignment, paste(expected, collapse = ", ")
+        name, info$size, info$align, base::paste(actual, collapse = ", "),
+        size, alignment, base::paste(expected, collapse = ", ")
       ),
       call. = FALSE
     )
   }
-  invisible(NULL)
+  base::invisible(NULL)
 }
 
 # A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
 # above guarantees the field is where the library put it.
 .jlr_status_message <- function(status) {
-  bytes <- as.raw(status$message)
-  nul <- which(bytes == as.raw(0L))
-  if (length(nul) > 0L) {
-    bytes <- bytes[seq_len(nul[[1L]] - 1L)]
+  bytes <- base::as.raw(status$message)
+  nul <- base::which(bytes == base::as.raw(0L))
+  if (base::length(nul) > 0L) {
+    bytes <- bytes[base::seq_len(nul[[1L]] - 1L)]
   }
-  rawToChar(bytes)
+  base::rawToChar(bytes)
 }
 
 # The R condition class for a `JLWStatus` code. An unknown code is a plain
 # `jlw_error`.
 .jlr_status_class <- function(code) {
-  switch(
-    as.character(code),
+  base::switch(
+    base::as.character(code),
     "1" = "jlw_error",
     "2" = "jlw_argument",
     "3" = "jlw_dimension",
@@ -60,9 +73,9 @@
 }
 
 .jlr_abort <- function(code, msg) {
-  stop(structure(
-    class = c(.jlr_status_class(code), "jlw_error", "error", "condition"),
-    list(message = msg, call = NULL, code = code)
+  base::stop(base::structure(
+    class = base::c(.jlr_status_class(code), "jlw_error", "error", "condition"),
+    base::list(message = msg, call = NULL, code = code)
   ))
 }
 
@@ -71,157 +84,157 @@
   if (status$code != 0L) {
     .jlr_abort(status$code, .jlr_status_message(status))
   }
-  invisible(NULL)
+  base::invisible(NULL)
 }
 
 # `as.externalptr` needs a non-empty vector; the carriers' builders use this.
 .jlr_extptr <- function(x) {
-  as.externalptr(if (length(x) == 0L) as.raw(0L) else x)
+  rdyncall::as.externalptr(if (base::length(x) == 0L) base::as.raw(0L) else x)
 }
 
 # Foreign C aggregates, in dependency order.
-cstruct("CString_owned{i*C}length data;")
+rdyncall::cstruct("CString_owned{i*C}length data;", envir = .jlr_types)
 .jlr_check_layout("CString_owned", size = 16L, alignment = 8L,
-                   offsets = c(length = 0L, data = 8L))
+                   offsets = base::c(length = 0L, data = 8L))
 
-cstruct("CStrArray_owned{l*<CString_owned>}length data;")
+rdyncall::cstruct("CStrArray_owned{l*<CString_owned>}length data;", envir = .jlr_types)
 .jlr_check_layout("CStrArray_owned", size = 16L, alignment = 8L,
-                   offsets = c(length = 0L, data = 8L))
+                   offsets = base::c(length = 0L, data = 8L))
 
-cstruct("JLWStatus{iC[256]}code message;")
+rdyncall::cstruct("JLWStatus{iC[256]}code message;", envir = .jlr_types)
 .jlr_check_layout("JLWStatus", size = 260L, alignment = 4L,
-                   offsets = c(code = 0L, message = 4L))
+                   offsets = base::c(code = 0L, message = 4L))
 
-cstruct("CVector_owned_Float64{i[1]*d}dims data;")
+rdyncall::cstruct("CVector_owned_Float64{i[1]*d}dims data;", envir = .jlr_types)
 .jlr_check_layout("CVector_owned_Float64", size = 16L, alignment = 8L,
-                   offsets = c(dims = 0L, data = 8L))
+                   offsets = base::c(dims = 0L, data = 8L))
 
-cstruct("Tuple_CVector_owned_Float64_Int64{<CVector_owned_Float64>l}x_1 x_2;")
+rdyncall::cstruct("Tuple_CVector_owned_Float64_Int64{<CVector_owned_Float64>l}x_1 x_2;", envir = .jlr_types)
 .jlr_check_layout("Tuple_CVector_owned_Float64_Int64", size = 24L, alignment = 8L,
-                   offsets = c(x_1 = 0L, x_2 = 16L))
+                   offsets = base::c(x_1 = 0L, x_2 = 16L))
 
-cstruct("CNTuple_2_Tuple_CVector_owned_Float64_Int64{<Tuple_CVector_owned_Float64_Int64>}values;")
+rdyncall::cstruct("CNTuple_2_Tuple_CVector_owned_Float64_Int64{<Tuple_CVector_owned_Float64_Int64>}values;", envir = .jlr_types)
 .jlr_check_layout("CNTuple_2_Tuple_CVector_owned_Float64_Int64", size = 24L, alignment = 8L,
-                   offsets = c(values = 0L))
+                   offsets = base::c(values = 0L))
 
-cstruct("JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64{<JLWStatus><CNTuple_2_Tuple_CVector_owned_Float64_Int64>}status value;")
+rdyncall::cstruct("JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64{<JLWStatus><CNTuple_2_Tuple_CVector_owned_Float64_Int64>}status value;", envir = .jlr_types)
 .jlr_check_layout("JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64", size = 288L, alignment = 8L,
-                   offsets = c(status = 0L, value = 264L))
+                   offsets = base::c(status = 0L, value = 264L))
 
-cstruct("CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64{<CVector_owned_Float64>[2]}values;")
+rdyncall::cstruct("CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64{<CVector_owned_Float64>[2]}values;", envir = .jlr_types)
 .jlr_check_layout("CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64", size = 32L, alignment = 8L,
-                   offsets = c(values = 0L))
+                   offsets = base::c(values = 0L))
 
-cstruct("JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64{<JLWStatus><CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64>}status value;")
+rdyncall::cstruct("JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64{<JLWStatus><CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64>}status value;", envir = .jlr_types)
 .jlr_check_layout("JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64", size = 296L, alignment = 8L,
-                   offsets = c(status = 0L, value = 264L))
+                   offsets = base::c(status = 0L, value = 264L))
 
-cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;")
+rdyncall::cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;", envir = .jlr_types)
 .jlr_check_layout("CDict_owned_Float64", size = 24L, alignment = 8L,
-                   offsets = c(length = 0L, keys = 8L, values = 16L))
+                   offsets = base::c(length = 0L, keys = 8L, values = 16L))
 
-cstruct("COpt_Float64{id}has_value value;")
+rdyncall::cstruct("COpt_Float64{id}has_value value;", envir = .jlr_types)
 .jlr_check_layout("COpt_Float64", size = 16L, alignment = 8L,
-                   offsets = c(has_value = 0L, value = 8L))
+                   offsets = base::c(has_value = 0L, value = 8L))
 
-cstruct("Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64{<CString_owned><CStrArray_owned><CDict_owned_Float64><COpt_Float64>}x_1 x_2 x_3 x_4;")
+rdyncall::cstruct("Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64{<CString_owned><CStrArray_owned><CDict_owned_Float64><COpt_Float64>}x_1 x_2 x_3 x_4;", envir = .jlr_types)
 .jlr_check_layout("Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64", size = 72L, alignment = 8L,
-                   offsets = c(x_1 = 0L, x_2 = 16L, x_3 = 32L, x_4 = 56L))
+                   offsets = base::c(x_1 = 0L, x_2 = 16L, x_3 = 32L, x_4 = 56L))
 
-cstruct("CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64{<Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64>}values;")
+rdyncall::cstruct("CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64{<Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64>}values;", envir = .jlr_types)
 .jlr_check_layout("CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64", size = 72L, alignment = 8L,
-                   offsets = c(values = 0L))
+                   offsets = base::c(values = 0L))
 
-cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64{<JLWStatus><CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64>}status value;")
+rdyncall::cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64{<JLWStatus><CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64>}status value;", envir = .jlr_types)
 .jlr_check_layout("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64", size = 336L, alignment = 8L,
-                   offsets = c(status = 0L, value = 264L))
+                   offsets = base::c(status = 0L, value = 264L))
 
 .jlr_CString_owned_ret <- function(s) {
-  on.exit(.jlr_jlw_free(s$data), add = TRUE)
-  .jlr_bytes <- raw(as.integer(s$length))
-  for (.jlr_i in seq_len(length(.jlr_bytes))) {
-    .jlr_bytes[.jlr_i] <- as.raw(unpack(s$data, .jlr_i - 1L, "C"))
+  base::on.exit(.jlr_jlw_free(s$data), add = TRUE)
+  .jlr_bytes <- base::raw(base::as.integer(s$length))
+  for (.jlr_i in base::seq_len(base::length(.jlr_bytes))) {
+    .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(s$data, .jlr_i - 1L, "C"))
   }
-  .jlr_nul <- which(.jlr_bytes == as.raw(0L))
-  if (length(.jlr_nul) > 0L) {
-    .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]
+  .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
+  if (base::length(.jlr_nul) > 0L) {
+    .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
   }
-  rawToChar(.jlr_bytes)
+  base::rawToChar(.jlr_bytes)
 }
 
 .jlr_CStrArray_owned_ret <- function(s) {
-  on.exit(.jlr_jlw_free_strings(s$data, s$length), add = TRUE)
-  .jlr_n <- as.integer(s$length)
-  .jlr_out <- character(.jlr_n)
-  for (.jlr_i in seq_len(.jlr_n)) {
+  base::on.exit(.jlr_jlw_free_strings(s$data, s$length), add = TRUE)
+  .jlr_n <- base::as.integer(s$length)
+  .jlr_out <- base::character(.jlr_n)
+  for (.jlr_i in base::seq_len(.jlr_n)) {
     .jlr_off <- (.jlr_i - 1L) * 16L
-    .jlr_len <- as.integer(unpack(s$data, .jlr_off + 0L, "i"))
-    .jlr_ptr <- unpack(s$data, .jlr_off + 8L, "p")
-    .jlr_bytes <- raw(.jlr_len)
-    for (.jlr_j in seq_len(.jlr_len)) {
-      .jlr_bytes[.jlr_j] <- as.raw(unpack(.jlr_ptr, .jlr_j - 1L, "C"))
+    .jlr_len <- base::as.integer(rdyncall::unpack(s$data, .jlr_off + 0L, "i"))
+    .jlr_ptr <- rdyncall::unpack(s$data, .jlr_off + 8L, "p")
+    .jlr_bytes <- base::raw(.jlr_len)
+    for (.jlr_j in base::seq_len(.jlr_len)) {
+      .jlr_bytes[.jlr_j] <- base::as.raw(rdyncall::unpack(.jlr_ptr, .jlr_j - 1L, "C"))
     }
-    .jlr_nul <- which(.jlr_bytes == as.raw(0L))
-    if (length(.jlr_nul) > 0L) {
-      .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]
+    .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
+    if (base::length(.jlr_nul) > 0L) {
+      .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
     }
-    .jlr_out[.jlr_i] <- rawToChar(.jlr_bytes)
+    .jlr_out[.jlr_i] <- base::rawToChar(.jlr_bytes)
   }
   .jlr_out
 }
 
 .jlr_CVector_owned_Float64_ret <- function(s) {
-  on.exit(.jlr_jlw_free(s$data), add = TRUE)
-  .jlr_dims <- as.integer(s$dims)
-  .jlr_n <- as.integer(prod(.jlr_dims))
-  .jlr_out <- numeric(.jlr_n)
-  for (.jlr_i in seq_len(.jlr_n)) {
-    .jlr_out[.jlr_i] <- unpack(s$data, (.jlr_i - 1L) * 8, "d")
+  base::on.exit(.jlr_jlw_free(s$data), add = TRUE)
+  .jlr_dims <- base::as.integer(s$dims)
+  .jlr_n <- base::as.integer(base::prod(.jlr_dims))
+  .jlr_out <- base::numeric(.jlr_n)
+  for (.jlr_i in base::seq_len(.jlr_n)) {
+    .jlr_out[.jlr_i] <- rdyncall::unpack(s$data, (.jlr_i - 1L) * 8, "d")
   }
-  if (length(.jlr_dims) > 1L) {
-    dim(.jlr_out) <- .jlr_dims
+  if (base::length(.jlr_dims) > 1L) {
+    base::dim(.jlr_out) <- .jlr_dims
   }
   .jlr_out
 }
 
 .jlr_CNTuple_2_Tuple_CVector_owned_Float64_Int64_ret <- function(s) {
-  list(.jlr_CVector_owned_Float64_ret(s$values$x_1), s$values$x_2)
+  base::list(.jlr_CVector_owned_Float64_ret(s$values$x_1), s$values$x_2)
 }
 
 .jlr_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64_ret <- function(s) {
-  list(.jlr_CVector_owned_Float64_ret(s$values[[1]]), .jlr_CVector_owned_Float64_ret(s$values[[2]]))
+  base::list(.jlr_CVector_owned_Float64_ret(s$values[[1]]), .jlr_CVector_owned_Float64_ret(s$values[[2]]))
 }
 
 .jlr_CDict_owned_Float64_ret <- function(s) {
-  on.exit({
+  base::on.exit({
     .jlr_jlw_free_strings(s$keys, s$length)
     .jlr_jlw_free(s$values)
   }, add = TRUE)
-  .jlr_n <- as.integer(s$length)
-  .jlr_out <- numeric(.jlr_n)
-  .jlr_names <- character(.jlr_n)
-  for (.jlr_i in seq_len(.jlr_n)) {
+  .jlr_n <- base::as.integer(s$length)
+  .jlr_out <- base::numeric(.jlr_n)
+  .jlr_names <- base::character(.jlr_n)
+  for (.jlr_i in base::seq_len(.jlr_n)) {
     .jlr_off <- (.jlr_i - 1L) * 16L
-    .jlr_len <- as.integer(unpack(s$keys, .jlr_off + 0L, "i"))
-    .jlr_ptr <- unpack(s$keys, .jlr_off + 8L, "p")
-    .jlr_bytes <- raw(.jlr_len)
-    for (.jlr_j in seq_len(.jlr_len)) {
-      .jlr_bytes[.jlr_j] <- as.raw(unpack(.jlr_ptr, .jlr_j - 1L, "C"))
+    .jlr_len <- base::as.integer(rdyncall::unpack(s$keys, .jlr_off + 0L, "i"))
+    .jlr_ptr <- rdyncall::unpack(s$keys, .jlr_off + 8L, "p")
+    .jlr_bytes <- base::raw(.jlr_len)
+    for (.jlr_j in base::seq_len(.jlr_len)) {
+      .jlr_bytes[.jlr_j] <- base::as.raw(rdyncall::unpack(.jlr_ptr, .jlr_j - 1L, "C"))
     }
-    .jlr_nul <- which(.jlr_bytes == as.raw(0L))
-    if (length(.jlr_nul) > 0L) {
-      .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]
+    .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
+    if (base::length(.jlr_nul) > 0L) {
+      .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
     }
-    .jlr_names[.jlr_i] <- rawToChar(.jlr_bytes)
-    .jlr_out[.jlr_i] <- unpack(s$values, (.jlr_i - 1L) * 8L, "d")
+    .jlr_names[.jlr_i] <- base::rawToChar(.jlr_bytes)
+    .jlr_out[.jlr_i] <- rdyncall::unpack(s$values, (.jlr_i - 1L) * 8L, "d")
   }
-  names(.jlr_out) <- .jlr_names
+  base::names(.jlr_out) <- .jlr_names
   .jlr_out
 }
 
 .jlr_COpt_Float64_arg <- function(x) {
-  .jlr_carrier <- cdata("COpt_Float64")
-  if (is.null(x)) {
+  .jlr_carrier <- .jlr_cdata("COpt_Float64")
+  if (base::is.null(x)) {
     .jlr_carrier$has_value <- 0L
     .jlr_carrier$value <- 0
   } else {
@@ -233,49 +246,49 @@ cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Flo
 
 .jlr_COpt_Float64_ret <- function(s) {
   if (s$has_value == 0L) {
-    return(NULL)
+    base::return(NULL)
   }
   s$value
 }
 
 .jlr_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64_ret <- function(s) {
-  list(.jlr_CString_owned_ret(s$values$x_1), .jlr_CStrArray_owned_ret(s$values$x_2), .jlr_CDict_owned_Float64_ret(s$values$x_3), .jlr_COpt_Float64_ret(s$values$x_4))
+  base::list(.jlr_CString_owned_ret(s$values$x_1), .jlr_CStrArray_owned_ret(s$values$x_2), .jlr_CDict_owned_Float64_ret(s$values$x_3), .jlr_COpt_Float64_ret(s$values$x_4))
 }
 
 # Low-level entrypoint bindings. Each signature string is generated
 # from the ABI; a mismatch would crash the R process rather than raise.
 .jlr_stats <- function() {
-  .jlr_result <- dyncall(get("stats", envir = .jlr_syms), ")<JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64>")
+  .jlr_result <- .jlr_dyncall(base::get("stats", envir = .jlr_syms), ")<JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_Int64>")
   .jlr_check_status(.jlr_result$status)
   .jlr_result$value
 }
 
 .jlr_pair <- function() {
-  .jlr_result <- dyncall(get("pair", envir = .jlr_syms), ")<JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64>")
+  .jlr_result <- .jlr_dyncall(base::get("pair", envir = .jlr_syms), ")<JLWResult_CNTuple_2_Tuple_CVector_owned_Float64_CVector_owned_Float64>")
   .jlr_check_status(.jlr_result$status)
   .jlr_result$value
 }
 
 .jlr_bundle <- function() {
-  .jlr_result <- dyncall(get("bundle", envir = .jlr_syms), ")<JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64>")
+  .jlr_result <- .jlr_dyncall(base::get("bundle", envir = .jlr_syms), ")<JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Float64_COpt_Float64>")
   .jlr_check_status(.jlr_result$status)
   .jlr_result$value
 }
 
 .jlr_jlw_free <- function(p) {
-  dyncall(get("jlw_free", envir = .jlr_syms), "p)v", p)
-  invisible(NULL)
+  .jlr_dyncall(base::get("jlw_free", envir = .jlr_syms), "p)v", p)
+  base::invisible(NULL)
 }
 
 .jlr_jlw_free_strings <- function(p, n) {
-  dyncall(get("jlw_free_strings", envir = .jlr_syms), "pl)v", p, n)
-  invisible(NULL)
+  .jlr_dyncall(base::get("jlw_free_strings", envir = .jlr_syms), "pl)v", p, n)
+  base::invisible(NULL)
 }
 
 # The library the package loads, and where to find it.
 .jlr_library_basename <- "libctuple"
 .jlr_library_env_var <- "LIBCTUPLE_R_LIBRARY"
-.jlr_symbols <- c(
+.jlr_symbols <- base::c(
   "stats",
   "pair",
   "bundle",
@@ -286,10 +299,10 @@ cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Flo
 .jlr_library_suffixes <- function() {
   if (.Platform$OS.type == "windows") {
     ".dll"
-  } else if (identical(Sys.info()[["sysname"]], "Darwin")) {
-    c(".dylib", ".so")
+  } else if (base::identical(base::Sys.info()[["sysname"]], "Darwin")) {
+    base::c(".dylib", ".so")
   } else {
-    c(".so", ".dylib")
+    base::c(".so", ".dylib")
   }
 }
 
@@ -297,9 +310,9 @@ cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Flo
 # MATLAB gateway's `<LIBNAME>_MEX_LIBRARY` accepts. Return the first of
 # `base`, `base<suffix>` that exists, or `NULL`.
 .jlr_library_candidate <- function(base) {
-  for (candidate in paste0(base, c("", .jlr_library_suffixes()))) {
-    if (file.exists(candidate)) {
-      return(candidate)
+  for (candidate in base::paste0(base, base::c("", .jlr_library_suffixes()))) {
+    if (base::file.exists(candidate)) {
+      base::return(candidate)
     }
   }
   NULL
@@ -309,24 +322,24 @@ cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Flo
 # juliac runtime stay where they were built, so a bundle's RUNPATH resolves
 # `libjulia` from inside the installed package.
 .jlr_library_dirs <- function(libname, pkgname) {
-  dirs <- character(0)
-  pkgdir <- system.file(package = pkgname, lib.loc = libname)
-  if (nzchar(pkgdir)) {
-    dirs <- c(dirs, pkgdir, dirname(pkgdir))
+  dirs <- base::character(0)
+  pkgdir <- base::system.file(package = pkgname, lib.loc = libname)
+  if (base::nzchar(pkgdir)) {
+    dirs <- base::c(dirs, pkgdir, base::dirname(pkgdir))
   }
   dirs
 }
 
 .jlr_resolve_library <- function(libname, pkgname) {
-  override <- Sys.getenv(.jlr_library_env_var, unset = "")
-  if (nzchar(override)) {
+  override <- base::Sys.getenv(.jlr_library_env_var, unset = "")
+  if (base::nzchar(override)) {
     found <- .jlr_library_candidate(override)
-    if (!is.null(found)) {
-      return(found)
+    if (!base::is.null(found)) {
+      base::return(found)
     }
-    stop(
-      sprintf(
-        paste0(
+    base::stop(
+      base::sprintf(
+        base::paste0(
           "could not find the %s shared library at %s, or beside that path ",
           "with a platform suffix; set %s to an explicit path"
         ),
@@ -335,60 +348,60 @@ cstruct("JLWResult_CNTuple_4_Tuple_CString_owned_CStrArray_owned_CDict_owned_Flo
       call. = FALSE
     )
   }
-  tried <- character(0)
+  tried <- base::character(0)
   for (directory in .jlr_library_dirs(libname, pkgname)) {
-    for (suffix in c("", .jlr_library_suffixes())) {
-      candidate <- paste0(file.path(directory, .jlr_library_basename), suffix)
-      tried <- c(tried, candidate)
-      if (file.exists(candidate)) {
-        return(candidate)
+    for (suffix in base::c("", .jlr_library_suffixes())) {
+      candidate <- base::paste0(base::file.path(directory, .jlr_library_basename), suffix)
+      tried <- base::c(tried, candidate)
+      if (base::file.exists(candidate)) {
+        base::return(candidate)
       }
     }
   }
-  stop(
-    sprintf(
+  base::stop(
+    base::sprintf(
       "could not locate the %s shared library; tried %s; set %s to an explicit path",
-      .jlr_library_basename, paste(tried, collapse = ", "), .jlr_library_env_var
+      .jlr_library_basename, base::paste(tried, collapse = ", "), .jlr_library_env_var
     ),
     call. = FALSE
   )
 }
 
 .onLoad <- function(libname, pkgname) {
-  handle <- dynload(.jlr_resolve_library(libname, pkgname))
-  if (is.null(handle)) {
-    stop(
-      sprintf("could not load the %s shared library", .jlr_library_basename),
+  handle <- rdyncall::dynload(.jlr_resolve_library(libname, pkgname))
+  if (base::is.null(handle)) {
+    base::stop(
+      base::sprintf("could not load the %s shared library", .jlr_library_basename),
       call. = FALSE
     )
   }
-  assign(".jlr_handle", handle, envir = .jlr_syms)
+  base::assign(".jlr_handle", handle, envir = .jlr_syms)
   for (symbol in .jlr_symbols) {
-    pointer <- dynsym(handle, symbol)
-    if (is.null(pointer)) {
-      stop(
-        sprintf("could not resolve the exported symbol %s", symbol),
+    pointer <- rdyncall::dynsym(handle, symbol)
+    if (base::is.null(pointer)) {
+      base::stop(
+        base::sprintf("could not resolve the exported symbol %s", symbol),
         call. = FALSE
       )
     }
-    assign(symbol, pointer, envir = .jlr_syms)
+    base::assign(symbol, pointer, envir = .jlr_syms)
   }
-  loaded <- getOption("jlw.loaded_r_packages", character(0))
-  if (length(loaded) > 0L && !(pkgname %in% loaded)) {
-    warning(
-      sprintf(
-        paste0(
+  loaded <- base::getOption("jlw.loaded_r_packages", base::character(0))
+  if (base::length(loaded) > 0L && !(pkgname %in% loaded)) {
+    base::warning(
+      base::sprintf(
+        base::paste0(
           "loading %s into a process that already loaded %s; this package was ",
           "built without a private libjulia, so both packages resolve a single ",
           "Julia runtime and the first call into whichever did not initialize ",
           "it aborts the process. Rebuild with `privatize = true`, or compile ",
           "both APIs into a single juliac library."
         ),
-        pkgname, paste(loaded, collapse = ", ")
+        pkgname, base::paste(loaded, collapse = ", ")
       ),
       call. = FALSE
     )
   }
-  options(jlw.loaded_r_packages = unique(c(loaded, pkgname)))
-  invisible(NULL)
+  base::options(jlw.loaded_r_packages = base::unique(base::c(loaded, pkgname)))
+  base::invisible(NULL)
 }

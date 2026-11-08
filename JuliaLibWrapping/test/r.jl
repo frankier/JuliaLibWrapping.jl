@@ -405,6 +405,12 @@ end
                 sys.source($(repr(lowlevel)), envir = globalenv())
                 # Every registration ran its own layout check; spot-check a few
                 # facts the checks depend on.
+                if (exists("Pair", envir = globalenv(), inherits = FALSE)) stop("type leaked into public environment")
+                Pair <- get("Pair", envir = .jlr_types)
+                Flags <- get("Flags", envir = .jlr_types)
+                Vector2 <- get("Vector2", envir = .jlr_types)
+                Wrapper <- get("Wrapper", envir = .jlr_types)
+                Nested <- get("Nested", envir = .jlr_types)
                 if (Pair\$size != 8L) stop("Pair has the wrong size")
                 if (Flags\$fields\$type[[1]] != "C") stop("a Bool field is not one byte")
                 if (Vector2\$fields\$type[[1]] != "l") stop("an array field lost its element")
@@ -445,8 +451,13 @@ end
                 library(rdyncall)
                 sys.source(file.path($(repr(path)), "rscalars", "R", "lowlevel.R"),
                            envir = globalenv())
+                scalars_types <- .jlr_types
                 sys.source(file.path($(repr(path)), "rapiscale", "R", "lowlevel.R"),
                            envir = globalenv())
+                JLWStatus <- get("JLWStatus", envir = .jlr_types)
+                JLWResult_Float64 <- get("JLWResult_Float64", envir = scalars_types)
+                CVector_borrowed_Float64 <- get("CVector_borrowed_Float64", envir = .jlr_types)
+                CString_borrowed <- get("CString_borrowed", envir = .jlr_types)
                 if (JLWStatus\$size != 260L) stop("JLWStatus has the wrong size")
                 if (JLWStatus\$fields\$offset[[2]] != 4L) stop("a JLWStatus message moved")
                 if (JLWResult_Float64\$size != 272L) stop("JLWResult{Float64} has the wrong size")
@@ -721,6 +732,14 @@ end
     # A `Bool` is packed as the one-byte `C` token the field workaround uses.
     @test JuliaLibWrapping._r_pack_value_expr("Bool", "x") == "as.integer(x[[.jlr_i]])"
     @test JuliaLibWrapping._r_pack_value_expr("Int16", "x") == "x[[.jlr_i]]"
+end
+
+@testset "R runtime qualification" begin
+    source = "length(x) + pack(x, 0, \"i\", 1) # list(x)\n" *
+        "msg <- \"length(x)\"; rdyncall::pack(x, 0, \"i\", 1)\n"
+    expected = "base::length(x) + rdyncall::pack(x, 0, \"i\", 1) # list(x)\n" *
+        "msg <- \"length(x)\"; rdyncall::pack(x, 0, \"i\", 1)\n"
+    @test JuliaLibWrapping._r_qualify_runtime(source) == expected
 end
 
 @testset "R carrier recognition" begin

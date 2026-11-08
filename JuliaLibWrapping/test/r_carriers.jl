@@ -199,14 +199,14 @@ const _R_CARRIER_SCRIPT = raw"""
 library(rdyncall)
 handle <- dynload("__LIB__")
 root <- "__ROOT__"
-load_pkg <- function(name) {
+load_pkg <- function(name, shared_env = FALSE) {
   env <- new.env(parent = globalenv())
   sys.source(file.path(root, name, "R", "lowlevel.R"), envir = env)
   assign(".jlr_handle", handle, envir = env$.jlr_syms)
   for (sym in env$.jlr_symbols) {
     assign(sym, dynsym(handle, sym), envir = env$.jlr_syms)
   }
-  facade <- new.env(parent = env)
+  facade <- if (shared_env) env else new.env(parent = env)
   sys.source(file.path(root, name, "R", "facade.R"), envir = facade)
   facade
 }
@@ -321,6 +321,16 @@ if (!inherits(packed_error, "error") ||
     !grepl("requires packing", conditionMessage(packed_error), fixed = TRUE)) {
   stop("packed in-place input was not rejected")
 }
+
+# A real package puts façade functions and runtime helpers in one namespace.
+# These names previously replaced calls or C type bindings used by helpers.
+shadow_names <- c("length", "c", "list", "pack", "cdata", "CVector_borrowed_Float64")
+for (i in seq_along(shadow_names)) {
+  shadow <- load_pkg(paste0("rshadow", i), shared_env = TRUE)
+  result <- get(shadow_names[[i]], envir = shadow)(1:3, 2, "x")
+  chk(paste0("shadowed ", shadow_names[[i]]), result$x, c(3, 5, 7))
+  chk(paste0("shadowed output ", shadow_names[[i]]), result$out, c(3, 5, 7))
+}
 cat("OK\n")
 """
 
@@ -413,6 +423,27 @@ cat("OK\n")
                     ),
                 )
             )
+            shadow_names = (
+                "length", "c", "list", "pack", "cdata",
+                "CVector_borrowed_Float64",
+            )
+            for (i, public_name) in enumerate(shadow_names)
+                write_wrapper(
+                    RTarget(path, "rshadow$i", "libshadow$i"),
+                    read_abi_info("bindinginfo_api_scale.json");
+                    api_metadata = Dict{String, Any}(
+                        "mylib_scale" => Dict{String, Any}(
+                            "name" => public_name,
+                            "args" => ["x"],
+                            "kwargs" => [
+                                Dict{String, Any}("name" => "factor", "default" => 2.0),
+                                Dict{String, Any}("name" => "label"),
+                            ],
+                            "mutates" => ["x"],
+                        ),
+                    )
+                )
+            end
             csrc = joinpath(path, "carriers.c")
             write(csrc, _R_CARRIER_C)
             lib = joinpath(path, "libcarriers." * Base.Libc.Libdl.dlext)
@@ -421,6 +452,20 @@ cat("OK\n")
             ok || @info "R carrier test library compile failed" command = compile
             @test ok
             if ok
+                rcmd = Sys.which("R")
+                if rcmd !== nothing
+                    rlib = mkpath(joinpath(path, "rlib"))
+                    install = addenv(
+                        `$rcmd CMD INSTALL --library=$rlib $(joinpath(path, "rshadow1"))`,
+                        "LIBSHADOW1_R_LIBRARY" => lib,
+                    )
+                    @test success(pipeline(install; stdout = devnull, stderr = devnull))
+                    installed = addenv(
+                        `$rscript --vanilla -e "library(rshadow1); stopifnot(identical(length(1:3, 2, 'x')\$x, c(3, 5, 7)))"`,
+                        "R_LIBS" => rlib, "LIBSHADOW1_R_LIBRARY" => lib,
+                    )
+                    @test success(pipeline(installed; stdout = devnull, stderr = devnull))
+                end
                 script = joinpath(path, "carriers.R")
                 write(
                     script,

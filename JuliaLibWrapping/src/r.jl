@@ -869,13 +869,15 @@ end
 Emit the R package described by `dest`/`abi_info`: `DESCRIPTION`, `NAMESPACE`,
 `LICENSE`, `R/lowlevel.R` and, when it does not exist yet, `R/facade.R`.
 
-`R/lowlevel.R` registers every aggregate with `cstruct()` in dependency order,
+`R/lowlevel.R` registers every aggregate with `cstruct()` in a private type
+environment and in dependency order,
 checks each computed layout against the offsets `juliac` recorded, defines the
 helpers that read a `JLWStatus` and raise a condition, binds every entrypoint
 whose types have a dyncall token, and defines the `.onLoad` hook that locates
 the shared library, resolves the exported symbols, and records the package as
 loaded. The registration lines run when the package is installed, so the type
-information is part of the installed namespace. The file is written to a
+information is available to its private dyncall helpers without occupying a
+public name. The file is written to a
 scratch name and renamed into place, so a failed emission never leaves a
 half-written file.
 
@@ -910,18 +912,22 @@ function write_wrapper(
     release_present = _release_symbols_present(abi_info)
 
     _write_atomically(joinpath(rdir, "lowlevel.R"), rdir) do f
+        source = IOBuffer()
         _write_r_lowlevel(
-            f, dest, abi_info, typedict, release_present, api_metadata, api_enums
+            source, dest, abi_info, typedict, release_present, api_metadata, api_enums
         )
+        print(f, _r_qualify_runtime(String(take!(source))))
     end
 
     facade_path = joinpath(rdir, "facade.R")
     if !isfile(facade_path)
         _write_atomically(facade_path, rdir) do f
+            source = IOBuffer()
             _write_r_facade(
-                f, dest, abi_info, typedict, api_metadata, api_enums,
+                source, dest, abi_info, typedict, api_metadata, api_enums,
                 release_present
             )
+            print(f, _r_qualify_runtime(String(take!(source))))
         end
     end
 
@@ -929,6 +935,79 @@ function write_wrapper(
     _write_r_namespace(joinpath(pkgdir, "NAMESPACE"))
     _write_r_license(joinpath(pkgdir, "LICENSE"))
     return nothing
+end
+
+# Public façade names share an R package namespace with the generated helpers.
+# Qualify every runtime dependency while leaving comments, strings, and the
+# generated `.jlr_` calls intact. In particular, a public `length` or `list`
+# must never replace the corresponding base function inside a helper.
+const _R_BASE_RUNTIME_CALLS = Set(split(
+    "Sys.getenv Sys.info as.character as.double as.integer as.raw assign attr " *
+    "baseenv c charToRaw character dim dirname emptyenv enc2utf8 evalq " *
+    "file.exists file.path format get getOption identical inherits invisible is.character " *
+    "is.logical is.na is.null is.numeric lapply length list match names " *
+    "new.env numeric nzchar on.exit options parent.frame paste paste0 prod raw " *
+    "rawToChar return seq_len sprintf stop structure switch system.file " *
+    "typeof unique unname vector warning which"
+))
+const _R_RDYNCALL_RUNTIME_CALLS = Set(split(
+    "as.externalptr as.floatraw cdata cstruct dyncall dynload dynsym pack unpack"
+))
+
+function _r_qualify_runtime(source::AbstractString)
+    out = IOBuffer()
+    i = firstindex(source)
+    while i <= lastindex(source)
+        c = source[i]
+        if c == '#'
+            while i <= lastindex(source)
+                ch = source[i]
+                print(out, ch)
+                i = nextind(source, i)
+                ch == '\n' && break
+            end
+        elseif c == '"' || c == '\'' || c == '`'
+            print(out, c)
+            i = nextind(source, i)
+            while i <= lastindex(source)
+                ch = source[i]
+                print(out, ch)
+                i = nextind(source, i)
+                if ch == '\\' && i <= lastindex(source)
+                    print(out, source[i])
+                    i = nextind(source, i)
+                elseif ch == c
+                    break
+                end
+            end
+        elseif isascii(c) && (isletter(c) || c == '.')
+            first = i
+            i = nextind(source, i)
+            while i <= lastindex(source)
+                ch = source[i]
+                isascii(ch) && (isletter(ch) || isdigit(ch) || ch in ('.', '_')) || break
+                i = nextind(source, i)
+            end
+            name = String(SubString(source, first, prevind(source, i)))
+            j = i
+            while j <= lastindex(source) && isspace(source[j])
+                j = nextind(source, j)
+            end
+            previous = first == firstindex(source) ? '\0' : source[prevind(source, first)]
+            if previous ∉ (':', '$', '@') && j <= lastindex(source) && source[j] == '('
+                if name in _R_BASE_RUNTIME_CALLS
+                    print(out, "base::")
+                elseif name in _R_RDYNCALL_RUNTIME_CALLS
+                    print(out, "rdyncall::")
+                end
+            end
+            print(out, name)
+        else
+            print(out, c)
+            i = nextind(source, i)
+        end
+    end
+    return String(take!(out))
 end
 
 function _write_r_lowlevel(
@@ -948,6 +1027,20 @@ function _write_r_lowlevel(
 
     println(f, "# Symbol pointers, resolved once by `.onLoad`.")
     println(f, ".jlr_syms <- new.env(parent = emptyenv())")
+    println(f, ".jlr_types <- new.env(parent = baseenv())")
+    print(f, raw""".jlr_dyncall <- evalq(function(address, signature, ...) {
+  result <- rdyncall::dyncall(address, signature, ...)
+  if (base::inherits(result, "struct")) {
+    base::attr(result, "typeinfo_env") <- base::environment(base::sys.function())
+  }
+  result
+}, envir = .jlr_types)
+.jlr_cdata <- function(name) {
+  result <- rdyncall::cdata(base::get(name, envir = .jlr_types))
+  base::attr(result, "typeinfo_env") <- .jlr_types
+  result
+}
+""")
     println(f)
 
     _write_r_layout_check(f)
@@ -964,7 +1057,7 @@ function _write_r_lowlevel(
         println(f, "# Foreign C aggregates, in dependency order.")
         for (id, desc) in structs
             signature = _r_struct_signature(id, desc, typeinfo, typedict)
-            println(f, "cstruct(", _r_string(signature), ")")
+            println(f, "cstruct(", _r_string(signature), ", envir = .jlr_types)")
             names = _r_field_names(desc)
             offsets = join(
                 (
@@ -1177,7 +1270,7 @@ function _write_r_binding(
         f::IO, method::MethodDesc, signature::AbstractString,
         names::Vector{String}, ret
     )
-    call = "dyncall(get(" * _r_string(method.symbol) * ", envir = .jlr_syms), " *
+    call = ".jlr_dyncall(get(" * _r_string(method.symbol) * ", envir = .jlr_syms), " *
         _r_string(signature) *
         (isempty(names) ? "" : ", " * join(names, ", ")) * ")"
     println(
@@ -1273,7 +1366,7 @@ function _write_r_array_helpers(
         else
             println(f, "  .jlr_data <- ", borrow)
         end
-        println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
+        println(f, "  .jlr_carrier <- .jlr_cdata(", _r_string(mangled), ")")
         println(f, "  .jlr_carrier\$dims <- .jlr_dims")
         println(f, "  .jlr_carrier\$data <- .jlr_data")
         println(f, "  .jlr_carrier")
@@ -1310,7 +1403,7 @@ function _write_r_cstring_helpers(
     if cinfo.ownership === :borrowed
         println(f, ".jlr_", mangled, "_arg <- function(x) {")
         println(f, "  .jlr_bytes <- charToRaw(enc2utf8(as.character(x)))")
-        println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
+        println(f, "  .jlr_carrier <- .jlr_cdata(", _r_string(mangled), ")")
         println(f, "  .jlr_carrier\$length <- length(.jlr_bytes)")
         println(f, "  .jlr_carrier\$data <- .jlr_extptr(.jlr_bytes)")
         println(f, "  .jlr_carrier")
@@ -1388,7 +1481,7 @@ function _write_r_strarray_helpers(
             "L, \"p\", .jlr_extptr(.jlr_bufs[[.jlr_i]]))"
         )
         println(f, "  }")
-        println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
+        println(f, "  .jlr_carrier <- .jlr_cdata(", _r_string(mangled), ")")
         println(f, "  .jlr_carrier\$length <- .jlr_n")
         println(f, "  .jlr_carrier\$data <- .jlr_extptr(.jlr_arr)")
         println(f, "  .jlr_carrier")
@@ -1449,7 +1542,7 @@ function _write_r_cdict_helpers(
             _r_string(binfo.token), ", ", _r_pack_value_expr(cinfo.value_type, "x"), ")"
         )
         println(f, "  }")
-        println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
+        println(f, "  .jlr_carrier <- .jlr_cdata(", _r_string(mangled), ")")
         println(f, "  .jlr_carrier\$length <- .jlr_n")
         println(f, "  .jlr_carrier\$keys <- .jlr_extptr(.jlr_karr)")
         println(f, "  .jlr_carrier\$values <- .jlr_extptr(.jlr_varr)")
@@ -1487,7 +1580,7 @@ function _write_r_copt_helpers(f::IO, mangled::AbstractString, cinfo)
     bool = cinfo.value_type == "Bool"
     zero = binfo.kind === :logical || binfo.kind === :integer ? "0L" : "0"
     println(f, ".jlr_", mangled, "_arg <- function(x) {")
-    println(f, "  .jlr_carrier <- cdata(", _r_string(mangled), ")")
+    println(f, "  .jlr_carrier <- .jlr_cdata(", _r_string(mangled), ")")
     println(f, "  if (is.null(x)) {")
     println(f, "    .jlr_carrier\$has_value <- 0L")
     println(f, "    .jlr_carrier\$value <- ", zero)
@@ -1597,7 +1690,7 @@ function _write_r_layout_check(f::IO)
 # compiled with. A divergence would otherwise misread every field silently,
 # so a mismatch stops the package from loading.
 .jlr_check_layout <- function(name, size, alignment, offsets) {
-  info <- get(name, envir = parent.frame())
+  info <- get(name, envir = .jlr_types)
   actual <- as.integer(info$fields$offset)
   names(actual) <- as.character(info$fields$name)
   # `as.integer` drops a vector's names, so restore them before comparing.

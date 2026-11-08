@@ -34,12 +34,14 @@ to compile.
 ```
 
 The split matches the Python target. `R/lowlevel.R` is rewritten every build
-and holds the `cstruct()` registrations, the layout checks, the `JLWStatus`
+and holds private `cstruct()` registrations, the layout checks, the `JLWStatus`
 condition helpers, the carrier builders and readers, and one binding per
 entrypoint. `R/facade.R` is created only if it is absent, so edits to the
 public API survive a rebuild. `NAMESPACE` exports every name that does not
 start with a period, so the façade is public and the `.jlr_`-prefixed
 internals stay private.
+Runtime calls use explicit `base::` and `rdyncall::` lookups, so public names
+such as `length`, `list`, or `pack` do not replace helper dependencies.
 
 ## Calling a wrapped function
 
