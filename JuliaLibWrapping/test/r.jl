@@ -835,6 +835,9 @@ end
     ret_t = JuliaLibWrapping._r_classify_return(
         id_t, ctuple.typeinfo, td_t; release_present = true
     )
+    arg_t = JuliaLibWrapping._r_classify_arg(id_t, ctuple.typeinfo, td_t)
+    @test arg_t.kind === :opaque
+    @test occursin("hand-written R wrapper", arg_t.reason)
     @test ret_t.kind === :carrier
     @test ret_t.carrier.family === :tuple
     @test ret_t.carrier.elements[1].kind === :carrier
@@ -875,6 +878,10 @@ end
         mktempdir() do path
             write_wrapper(RTarget(path, pkg, lib; version = "1.2.3"), abi)
             pkgdir = joinpath(path, pkg)
+            @test occursin(
+                "Imports: rdyncall (>= 0.10.0)",
+                read(joinpath(pkgdir, "DESCRIPTION"), String),
+            )
             for (file, suffix) in (
                     (joinpath("R", "lowlevel.R"), "lowlevel"),
                     (joinpath("R", "facade.R"), "facade"),
@@ -993,7 +1000,7 @@ end
 
                 JLWStatus do_thing(int x) {
                   JLWStatus s;
-                  set_status(&s, x < 0 ? 2 : 0, x < 0 ? "negative" : "");
+                  set_status(&s, x < 0 ? 2 : 0, x < 0 ? "n\\xc3\\xa9gative" : "");
                   return s;
                 }
 
@@ -1026,11 +1033,16 @@ end
                     sys.source($(repr(lowlevel)), envir = env)
                     # The library override accepts a path with or without the
                     # platform extension, as the MATLAB gateway's does.
+                    dir.create($(repr(splitext(lib)[1])))
                     Sys.setenv(LIBRSCALARS_R_LIBRARY = $(repr(splitext(lib)[1])))
                     if (!identical(env\$.jlr_resolve_library("", ""), $(repr(lib)))) {
                       stop("the library override without an extension was not resolved")
                     }
                     Sys.unsetenv("LIBRSCALARS_R_LIBRARY")
+                    env\$.jlr_library_dirs <- function(libname, pkgname) $(repr(path))
+                    if (!identical(env\$.jlr_resolve_library("", ""), $(repr(lib)))) {
+                      stop("automatic discovery selected a directory over the shared library")
+                    }
                     handle <- dynload($(repr(lib)))
                     for (sym in env\$.jlr_symbols) {
                       assign(sym, dynsym(handle, sym), envir = env\$.jlr_syms)
@@ -1043,13 +1055,19 @@ end
                     if (!is.null(env\$.jlr_do_thing(1L))) {
                       stop("do_thing did not return NULL")
                     }
+                    old_locale <- Sys.getlocale("LC_CTYPE")
+                    Sys.setlocale("LC_CTYPE", "C")
                     err <- tryCatch(env\$.jlr_do_thing(-1L), error = function(e) e)
                     if (!inherits(err, "jlw_argument")) {
                       stop("do_thing did not raise jlw_argument")
                     }
-                    if (!identical(conditionMessage(err), "negative")) {
+                    if (!identical(conditionMessage(err), intToUtf8(c(110, 233, 103, 97, 116, 105, 118, 101)))) {
                       stop("the status message was misread")
                     }
+                    if (!identical(Encoding(conditionMessage(err)), "UTF-8")) {
+                      stop("the status message was not marked UTF-8")
+                    }
+                    Sys.setlocale("LC_CTYPE", old_locale)
                     if (!identical(err\$code, 2L)) {
                       stop("the condition lost its code")
                     }

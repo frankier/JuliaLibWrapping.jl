@@ -67,7 +67,7 @@ static CStringO make_owned(const char *v) {
   memcpy(s.data, v, s.length+1); return s;
 }
 
-CStringO give_greeting(void) { return make_owned("hello"); }
+CStringO give_greeting(void) { return make_owned("h\xc3\xa9llo"); }
 JLWResultCS greet(void) {
   JLWResultCS r; set_status(&r.status,0,""); r.value=give_greeting(); return r;
 }
@@ -92,7 +92,7 @@ long take_dict(CDictB d) {
 }
 
 CDictO give_dict(void) {
-  static const char *keys[] = {"a","bb"};
+  static const char *keys[] = {"a","b\xc3\xa9"};
   static const double vals[] = {1.5, -2.0};
   CDictO d; fill_dict(&d, keys, vals, 2); return d;
 }
@@ -229,7 +229,13 @@ chk("greeting_length", s$greeting_length("hello"), 5L)
 chk("greeting", s$greeting(), "hello")
 
 so <- load_pkg("rcstringowned")
-chk("give_greeting", so$give_greeting(), "hello")
+old_locale <- Sys.getlocale("LC_CTYPE")
+Sys.setlocale("LC_CTYPE", "C")
+utf8_greeting <- so$give_greeting()
+chk("UTF-8 string", utf8_greeting, intToUtf8(c(104, 233, 108, 108, 111)))
+chk("UTF-8 encoding", Encoding(utf8_greeting), "UTF-8")
+chk("UTF-8 character count", nchar(utf8_greeting), 5L)
+Sys.setlocale("LC_CTYPE", old_locale)
 
 sa <- load_pkg("rcstrarray")
 chk("take_strs", sa$take_strs(c("ab","cde")), 5)
@@ -237,7 +243,13 @@ chk("give_strs", sa$give_strs(), c("alpha","beta"))
 
 d <- load_pkg("rcdict")
 chk("take_dict", d$take_dict(c(a=1.5, bb=-2)), 3)
-chk("give_dict", d$give_dict(), c(a=1.5, bb=-2.0))
+chk("give_dict", d$give_dict(), setNames(c(1.5, -2.0), c("a", intToUtf8(c(98, 233)))))
+old_locale <- Sys.getlocale("LC_CTYPE")
+Sys.setlocale("LC_CTYPE", "C")
+utf8_key <- names(d$give_dict())[[2L]]
+chk("UTF-8 dictionary key encoding", Encoding(utf8_key), "UTF-8")
+chk("UTF-8 dictionary key length", nchar(utf8_key), 2L)
+Sys.setlocale("LC_CTYPE", old_locale)
 
 di <- load_pkg("rcdictint32")
 chk("take_dict_i32", di$take_dict_i32(c(a=3L, bb=4L)), 7)
@@ -254,12 +266,32 @@ chk("give_vec", vo$give_vec(), c(1,2,3))
 ct <- load_pkg("rctuple")
 chk("stats", ct$stats(), list(c(1,2,3), 42))
 chk("pair", ct$pair(), list(c(1,2,3), c(9,8)))
+# A conversion failure in the first slot must release both owned vectors.
+ct_low <- parent.env(ct)
+old_reader <- ct_low$.jlr_CVector_owned_Float64_ret
+old_free <- ct_low$.jlr_jlw_free
+releases <- 0L
+ct_low$.jlr_CVector_owned_Float64_ret <- function(s, .jlr_release = TRUE) {
+  stop("injected conversion error")
+}
+ct_low$.jlr_jlw_free <- function(p) {
+  releases <<- releases + 1L
+  old_free(p)
+}
+pair_error <- tryCatch(ct$pair(), error = function(e) e)
+if (!inherits(pair_error, "error") ||
+    !grepl("injected conversion error", conditionMessage(pair_error), fixed = TRUE)) {
+  stop("tuple conversion fault injection did not fire")
+}
+chk("tuple releases after conversion error", releases, 2L)
+ct_low$.jlr_CVector_owned_Float64_ret <- old_reader
+ct_low$.jlr_jlw_free <- old_free
 chk("bundle", ct$bundle(),
-    list("hi", c("alpha","beta"), c(a=1.5, bb=-2.0), 3.5))
+    list("hi", c("alpha","beta"), setNames(c(1.5, -2.0), c("a", intToUtf8(c(98, 233)))), 3.5))
 
 jo <- load_pkg("rjlwresultowned")
-chk("greet", jo$greet(), "hello")
-chk("tally", jo$tally(), c(a=1.5, bb=-2.0))
+chk("greet", jo$greet(), intToUtf8(c(104, 233, 108, 108, 111)))
+chk("tally", jo$tally(), setNames(c(1.5, -2.0), c("a", intToUtf8(c(98, 233)))))
 
 # An enum argument takes a member name or the integer, and an enum return
 # comes back as the member name.

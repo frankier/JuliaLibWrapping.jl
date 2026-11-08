@@ -8,4 +8,4 @@ Description: Generated bindings that load the libprimitives
     shared library through rdyncall and expose its entry points.
 License: MIT + file LICENSE
 Encoding: UTF-8
-Imports: rdyncall
+Imports: rdyncall (>= 0.10.0)

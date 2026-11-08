@@ -15,9 +15,9 @@ standard_build(@__DIR__; libname = "boundary", r_package = "boundary")
 
 The generated package is a normal R package, installable with
 `R CMD INSTALL <dir>/boundary` or `install.packages(<dir>/boundary,
-repos = NULL, type = "source")`. Its `DESCRIPTION` lists `rdyncall` in
-`Imports`, so installing the package pulls it in from CRAN; there is nothing
-to compile.
+repos = NULL, type = "source")`. Its `DESCRIPTION` requires `rdyncall >=
+0.10.0`, which provides the aggregate calls and type information used by the
+generated bindings.
 
 ```
 <out>/boundary/
@@ -88,6 +88,10 @@ Scalars follow R's vector types; a struct passed or returned by value is a
 `Int64` and `UInt64` beyond 2^53 cannot round-trip exactly: rdyncall returns
 them as R doubles, and R has no native 64-bit integer. Use them for counts and
 other small values, not for identifiers.
+
+Tuple returns are converted automatically. A hand-written entrypoint that
+accepts a tuple argument needs a hand-written R wrapper; the generator does
+not build tuple argument carriers.
 
 An R matrix is column-major, matching `CArray` storage, so a `Matrix{T}`
 carrier maps directly onto an R `matrix` or `array`, and its dimensions are

@@ -47,6 +47,12 @@
   base::invisible(NULL)
 }
 
+# Mark decoded bytes explicitly; package metadata does not set the encoding
+# of strings constructed at runtime, especially under non-UTF-8 locales.
+.jlr_decode_utf8 <- function(bytes) {
+  base::`Encoding<-`(base::rawToChar(bytes), "UTF-8")
+}
+
 # A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
 # above guarantees the field is where the library put it.
 .jlr_status_message <- function(status) {
@@ -55,7 +61,7 @@
   if (base::length(nul) > 0L) {
     bytes <- bytes[base::seq_len(nul[[1L]] - 1L)]
   }
-  base::rawToChar(bytes)
+  .jlr_decode_utf8(bytes)
 }
 
 # The R condition class for a `JLWStatus` code. An unknown code is a plain
@@ -136,7 +142,7 @@ rdyncall::cstruct("Handle{p}h;", envir = .jlr_types)
 # `base`, `base<suffix>` that exists, or `NULL`.
 .jlr_library_candidate <- function(base) {
   for (candidate in base::paste0(base, base::c("", .jlr_library_suffixes()))) {
-    if (base::file.exists(candidate)) {
+    if (base::file.exists(candidate) && base::identical(base::file.info(candidate)$isdir, FALSE)) {
       base::return(candidate)
     }
   }
@@ -178,7 +184,7 @@ rdyncall::cstruct("Handle{p}h;", envir = .jlr_types)
     for (suffix in base::c("", .jlr_library_suffixes())) {
       candidate <- base::paste0(base::file.path(directory, .jlr_library_basename), suffix)
       tried <- base::c(tried, candidate)
-      if (base::file.exists(candidate)) {
+      if (base::file.exists(candidate) && base::identical(base::file.info(candidate)$isdir, FALSE)) {
         base::return(candidate)
       }
     }

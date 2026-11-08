@@ -47,6 +47,12 @@
   base::invisible(NULL)
 }
 
+# Mark decoded bytes explicitly; package metadata does not set the encoding
+# of strings constructed at runtime, especially under non-UTF-8 locales.
+.jlr_decode_utf8 <- function(bytes) {
+  base::`Encoding<-`(base::rawToChar(bytes), "UTF-8")
+}
+
 # A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
 # above guarantees the field is where the library put it.
 .jlr_status_message <- function(status) {
@@ -55,7 +61,7 @@
   if (base::length(nul) > 0L) {
     bytes <- bytes[base::seq_len(nul[[1L]] - 1L)]
   }
-  base::rawToChar(bytes)
+  .jlr_decode_utf8(bytes)
 }
 
 # The R condition class for a `JLWStatus` code. An unknown code is a plain
@@ -97,17 +103,18 @@ rdyncall::cstruct("CString_owned{l*C}length data;", envir = .jlr_types)
 .jlr_check_layout("CString_owned", size = 16L, alignment = 8L,
                    offsets = base::c(length = 0L, data = 8L))
 
-.jlr_CString_owned_ret <- function(s) {
-  base::on.exit(.jlr_jlw_free(s$data), add = TRUE)
+.jlr_CString_owned_ret <- function(s, .jlr_release = TRUE) {
+  if (.jlr_release) base::on.exit(.jlr_jlw_free(s$data), add = TRUE)
   .jlr_bytes <- base::raw(base::as.integer(s$length))
+  .jlr_data <- s$data
   for (.jlr_i in base::seq_len(base::length(.jlr_bytes))) {
-    .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(s$data, .jlr_i - 1L, "C"))
+    .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(.jlr_data, .jlr_i - 1L, "C"))
   }
   .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
   if (base::length(.jlr_nul) > 0L) {
     .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
   }
-  base::rawToChar(.jlr_bytes)
+  .jlr_decode_utf8(.jlr_bytes)
 }
 
 # Low-level entrypoint bindings. Each signature string is generated
@@ -150,7 +157,7 @@ rdyncall::cstruct("CString_owned{l*C}length data;", envir = .jlr_types)
 # `base`, `base<suffix>` that exists, or `NULL`.
 .jlr_library_candidate <- function(base) {
   for (candidate in base::paste0(base, base::c("", .jlr_library_suffixes()))) {
-    if (base::file.exists(candidate)) {
+    if (base::file.exists(candidate) && base::identical(base::file.info(candidate)$isdir, FALSE)) {
       base::return(candidate)
     }
   }
@@ -192,7 +199,7 @@ rdyncall::cstruct("CString_owned{l*C}length data;", envir = .jlr_types)
     for (suffix in base::c("", .jlr_library_suffixes())) {
       candidate <- base::paste0(base::file.path(directory, .jlr_library_basename), suffix)
       tried <- base::c(tried, candidate)
-      if (base::file.exists(candidate)) {
+      if (base::file.exists(candidate) && base::identical(base::file.info(candidate)$isdir, FALSE)) {
         base::return(candidate)
       }
     }

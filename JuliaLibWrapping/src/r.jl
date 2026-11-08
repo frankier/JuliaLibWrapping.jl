@@ -499,6 +499,10 @@ function _r_classify_arg(
     end
     carrier = _r_carrier_info(type_id, typeinfo)
     if !isnothing(carrier)
+        carrier.family === :tuple && return (
+            kind = :opaque,
+            reason = "tuple arguments require a hand-written R wrapper",
+        )
         carrier.ownership === :owned && return (
             kind = :opaque,
             reason = "an owning $(carrier.family) carrier cannot be an argument; " *
@@ -944,11 +948,11 @@ end
 const _R_BASE_RUNTIME_CALLS = Set(split(
     "Sys.getenv Sys.info as.character as.double as.integer as.raw assign attr " *
     "baseenv c charToRaw character dim dirname emptyenv enc2utf8 evalq " *
-    "file.exists file.path format get getOption identical inherits invisible is.character " *
+    "file.exists file.info file.path format get getOption identical inherits invisible is.character " *
     "is.logical is.na is.null is.numeric lapply length list match names " *
     "new.env numeric nzchar on.exit options parent.frame paste paste0 prod raw " *
     "rawToChar return seq_len sprintf stop structure switch system.file " *
-    "typeof unique unname vector warning which"
+    "typeof unique unname vector warning which Encoding"
 ))
 const _R_RDYNCALL_RUNTIME_CALLS = Set(split(
     "as.externalptr as.floatraw cdata cstruct dyncall dynload dynsym pack unpack"
@@ -1086,7 +1090,13 @@ end
 # chain carries the specific category, as the MATLAB gateway's identifiers do.
 function _write_r_status_helpers(f::IO)
     print(
-        f, raw"""# A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
+        f, raw"""# Mark decoded bytes explicitly; package metadata does not set the encoding
+# of strings constructed at runtime, especially under non-UTF-8 locales.
+.jlr_decode_utf8 <- function(bytes) {
+  base::`Encoding<-`(rawToChar(bytes), "UTF-8")
+}
+
+# A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
 # above guarantees the field is where the library put it.
 .jlr_status_message <- function(status) {
   bytes <- as.raw(status$message)
@@ -1094,7 +1104,7 @@ function _write_r_status_helpers(f::IO)
   if (length(nul) > 0L) {
     bytes <- bytes[seq_len(nul[[1L]] - 1L)]
   }
-  rawToChar(bytes)
+  .jlr_decode_utf8(bytes)
 }
 
 # The R condition class for a `JLWStatus` code. An unknown code is a plain
@@ -1321,14 +1331,14 @@ _r_pack_value_expr(eltype::AbstractString, source::AbstractString) =
 # calls a symbol that does not exist.
 function _write_r_free_lines(f::IO, cinfo)
     if cinfo.family === :strarray
-        println(f, "  on.exit(.jlr_jlw_free_strings(s\$data, s\$length), add = TRUE)")
+        println(f, "  if (.jlr_release) on.exit(.jlr_jlw_free_strings(s\$data, s\$length), add = TRUE)")
     elseif cinfo.family === :dict
-        println(f, "  on.exit({")
-        println(f, "    .jlr_jlw_free_strings(s\$keys, s\$length)")
-        println(f, "    .jlr_jlw_free(s\$values)")
-        println(f, "  }, add = TRUE)")
+        println(f, "  if (.jlr_release) {")
+        println(f, "    on.exit(.jlr_jlw_free_strings(s\$keys, s\$length), add = TRUE)")
+        println(f, "    on.exit(.jlr_jlw_free(s\$values), add = TRUE)")
+        println(f, "  }")
     else
-        println(f, "  on.exit(.jlr_jlw_free(s\$data), add = TRUE)")
+        println(f, "  if (.jlr_release) on.exit(.jlr_jlw_free(s\$data), add = TRUE)")
     end
     return nothing
 end
@@ -1373,14 +1383,15 @@ function _write_r_array_helpers(
         println(f, "}")
         println(f)
     end
-    println(f, ".jlr_", mangled, "_ret <- function(s) {")
+    println(f, ".jlr_", mangled, "_ret <- function(s, .jlr_release = TRUE) {")
     cinfo.ownership === :owned && release_present &&
         _write_r_free_lines(f, cinfo)
     println(f, "  .jlr_dims <- as.integer(s\$dims)")
     println(f, "  .jlr_n <- as.integer(prod(.jlr_dims))")
     println(f, "  .jlr_out <- ", _r_buffer_init(binfo.kind), "(.jlr_n)")
+    println(f, "  .jlr_data <- s\$data")
     println(f, "  for (.jlr_i in seq_len(.jlr_n)) {")
-    read = "unpack(s\$data, (.jlr_i - 1L) * " * string(binfo.size) * ", " *
+    read = "unpack(.jlr_data, (.jlr_i - 1L) * " * string(binfo.size) * ", " *
         _r_string(binfo.token) * ")"
     cinfo.eltype == "Bool" && (read *= " != 0L")
     println(f, "    .jlr_out[.jlr_i] <- ", read)
@@ -1410,18 +1421,19 @@ function _write_r_cstring_helpers(
         println(f, "}")
         println(f)
     end
-    println(f, ".jlr_", mangled, "_ret <- function(s) {")
+    println(f, ".jlr_", mangled, "_ret <- function(s, .jlr_release = TRUE) {")
     cinfo.ownership === :owned && release_present &&
         _write_r_free_lines(f, cinfo)
     println(f, "  .jlr_bytes <- raw(as.integer(s\$length))")
+    println(f, "  .jlr_data <- s\$data")
     println(f, "  for (.jlr_i in seq_len(length(.jlr_bytes))) {")
-    println(f, "    .jlr_bytes[.jlr_i] <- as.raw(unpack(s\$data, .jlr_i - 1L, \"C\"))")
+    println(f, "    .jlr_bytes[.jlr_i] <- as.raw(unpack(.jlr_data, .jlr_i - 1L, \"C\"))")
     println(f, "  }")
     println(f, "  .jlr_nul <- which(.jlr_bytes == as.raw(0L))")
     println(f, "  if (length(.jlr_nul) > 0L) {")
     println(f, "    .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]")
     println(f, "  }")
-    println(f, "  rawToChar(.jlr_bytes)")
+    println(f, "  .jlr_decode_utf8(.jlr_bytes)")
     println(f, "}")
     println(f)
     return nothing
@@ -1488,15 +1500,16 @@ function _write_r_strarray_helpers(
         println(f, "}")
         println(f)
     end
-    println(f, ".jlr_", mangled, "_ret <- function(s) {")
+    println(f, ".jlr_", mangled, "_ret <- function(s, .jlr_release = TRUE) {")
     cinfo.ownership === :owned && release_present &&
         _write_r_free_lines(f, cinfo)
     println(f, "  .jlr_n <- as.integer(s\$length)")
     println(f, "  .jlr_out <- character(.jlr_n)")
+    println(f, "  .jlr_data <- s\$data")
     println(f, "  for (.jlr_i in seq_len(.jlr_n)) {")
     println(f, "    .jlr_off <- (.jlr_i - 1L) * ", size, "L")
-    _write_r_cstring_element_read(f, "s\$data", layout, "    ")
-    println(f, "    .jlr_out[.jlr_i] <- rawToChar(.jlr_bytes)")
+    _write_r_cstring_element_read(f, ".jlr_data", layout, "    ")
+    println(f, "    .jlr_out[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes)")
     println(f, "  }")
     println(f, "  .jlr_out")
     println(f, "}")
@@ -1550,17 +1563,19 @@ function _write_r_cdict_helpers(
         println(f, "}")
         println(f)
     end
-    println(f, ".jlr_", mangled, "_ret <- function(s) {")
+    println(f, ".jlr_", mangled, "_ret <- function(s, .jlr_release = TRUE) {")
     cinfo.ownership === :owned && release_present &&
         _write_r_free_lines(f, cinfo)
     println(f, "  .jlr_n <- as.integer(s\$length)")
     println(f, "  .jlr_out <- ", _r_buffer_init(binfo.kind), "(.jlr_n)")
     println(f, "  .jlr_names <- character(.jlr_n)")
+    println(f, "  .jlr_keys <- s\$keys")
+    println(f, "  .jlr_values <- s\$values")
     println(f, "  for (.jlr_i in seq_len(.jlr_n)) {")
     println(f, "    .jlr_off <- (.jlr_i - 1L) * ", size, "L")
-    _write_r_cstring_element_read(f, "s\$keys", layout, "    ")
-    println(f, "    .jlr_names[.jlr_i] <- rawToChar(.jlr_bytes)")
-    read = "unpack(s\$values, (.jlr_i - 1L) * " * string(binfo.size) * "L, " *
+    _write_r_cstring_element_read(f, ".jlr_keys", layout, "    ")
+    println(f, "    .jlr_names[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes)")
+    read = "unpack(.jlr_values, (.jlr_i - 1L) * " * string(binfo.size) * "L, " *
         _r_string(binfo.token) * ")"
     cinfo.value_type == "Bool" && (read *= " != 0L")
     println(f, "    .jlr_out[.jlr_i] <- ", read)
@@ -1591,7 +1606,7 @@ function _write_r_copt_helpers(f::IO, mangled::AbstractString, cinfo)
     println(f, "  .jlr_carrier")
     println(f, "}")
     println(f)
-    println(f, ".jlr_", mangled, "_ret <- function(s) {")
+    println(f, ".jlr_", mangled, "_ret <- function(s, .jlr_release = TRUE) {")
     println(f, "  if (s\$has_value == 0L) {")
     println(f, "    return(NULL)")
     println(f, "  }")
@@ -1601,17 +1616,57 @@ function _write_r_copt_helpers(f::IO, mangled::AbstractString, cinfo)
     return nothing
 end
 
-# The reader for a recognized `CNTuple`: an unnamed R list, one element per
-# tuple slot, each converted by its own element's reader. Heterogeneous tuples
-# are a struct whose fields are the positions; a homogeneous tuple is an
-# inline array instead.
-function _write_r_ctuple_helpers(
-        f::IO, mangled::AbstractString, desc::StructDesc, cinfo,
-        typeinfo::OrderedDict{Int, TypeDesc}, typedict::Dict{Int, String},
-        release_present::Bool
+# Access each tuple slot in the ABI layout, including homogeneous inline arrays.
+function _r_tuple_accessors(
+        source::AbstractString, desc::StructDesc, cinfo,
+        typeinfo::OrderedDict{Int, TypeDesc}
     )
     values_field = only(field for field in desc.fields if field.name == "values")
     inner = typeinfo[values_field.type]
+    arity = length(cinfo.element_type_ids)
+    if inner isa ArrayDesc
+        return [source * "\$values[[" * string(i) * "]]" for i in 1:arity]
+    elseif inner isa StructDesc
+        names = _r_field_names(inner)
+        return [source * "\$values\$" * names[i] for i in 1:arity]
+    end
+    return String[]
+end
+
+# A tuple owns all of its descendants at return time. Register every release
+# before calling any reader; child readers then skip their own release hooks.
+function _r_owned_cleanup_exprs(
+        source::AbstractString, type_id::Int,
+        typeinfo::OrderedDict{Int, TypeDesc}
+    )
+    cinfo = _r_carrier_info(type_id, typeinfo)
+    cinfo === nothing && return String[]
+    if cinfo.family === :tuple
+        accessors = _r_tuple_accessors(source, typeinfo[type_id], cinfo, typeinfo)
+        return reduce(vcat, (
+            _r_owned_cleanup_exprs(accessor, id, typeinfo)
+                for (accessor, id) in zip(accessors, cinfo.element_type_ids)
+        ); init = String[])
+    end
+    cinfo.ownership === :owned || return String[]
+    if cinfo.family === :strarray
+        return [".jlr_jlw_free_strings(" * source * "\$data, " * source * "\$length)"]
+    elseif cinfo.family === :dict
+        return [
+            ".jlr_jlw_free_strings(" * source * "\$keys, " * source * "\$length)",
+            ".jlr_jlw_free(" * source * "\$values)",
+        ]
+    end
+    return [".jlr_jlw_free(" * source * "\$data)"]
+end
+
+# The reader for a recognized `CNTuple`: an unnamed R list, one element per
+# tuple slot. Its release hooks cover the full returned ownership tree.
+function _write_r_ctuple_helpers(
+        f::IO, mangled::AbstractString, type_id::Int, desc::StructDesc, cinfo,
+        typeinfo::OrderedDict{Int, TypeDesc}, typedict::Dict{Int, String},
+        release_present::Bool
+    )
     classes = [
         _r_classify_return(
             id, typeinfo, typedict; pass_opaque = false, release_present
@@ -1619,24 +1674,25 @@ function _write_r_ctuple_helpers(
             for id in cinfo.element_type_ids
     ]
     any(el -> el.kind === :opaque, classes) && return nothing
-    arity = length(cinfo.element_type_ids)
-    accessors = if inner isa ArrayDesc
-        ["s\$values[[" * string(i) * "]]" for i in 1:arity]
-    elseif inner isa StructDesc
-        names = _r_field_names(inner)
-        ["s\$values\$" * names[i] for i in 1:arity]
-    else
-        return nothing
-    end
+    accessors = _r_tuple_accessors("s", desc, cinfo, typeinfo)
+    length(accessors) == length(cinfo.element_type_ids) || return nothing
     exprs = String[]
     for (i, el) in pairs(classes)
         accessor = accessors[i]
         push!(
             exprs,
-            el.kind === :carrier ? el.reader * "(" * accessor * ")" : accessor
+            el.kind === :carrier ? el.reader * "(" * accessor * ", FALSE)" : accessor
         )
     end
-    println(f, ".jlr_", mangled, "_ret <- function(s) {")
+    println(f, ".jlr_", mangled, "_ret <- function(s, .jlr_release = TRUE) {")
+    cleanup = _r_owned_cleanup_exprs("s", type_id, typeinfo)
+    if !isempty(cleanup)
+        println(f, "  if (.jlr_release) {")
+        for expr in cleanup
+            println(f, "    on.exit(", expr, ", add = TRUE)")
+        end
+        println(f, "  }")
+    end
     println(f, "  list(", join(exprs, ", "), ")")
     println(f, "}")
     println(f)
@@ -1676,7 +1732,7 @@ function _write_r_carrier_helpers(
             _write_r_copt_helpers(f, mangled, cinfo)
         elseif cinfo.family === :tuple
             _write_r_ctuple_helpers(
-                f, mangled, desc, cinfo, typeinfo, typedict, release_present
+                f, mangled, id, desc, cinfo, typeinfo, typedict, release_present
             )
         end
     end
@@ -1753,7 +1809,7 @@ function _write_r_loader(f::IO, dest::RTarget, entrypoints::Vector{MethodDesc})
 # `base`, `base<suffix>` that exists, or `NULL`.
 .jlr_library_candidate <- function(base) {
   for (candidate in paste0(base, c("", .jlr_library_suffixes()))) {
-    if (file.exists(candidate)) {
+    if (file.exists(candidate) && identical(file.info(candidate)$isdir, FALSE)) {
       return(candidate)
     }
   }
@@ -1805,7 +1861,7 @@ function _write_r_loader(f::IO, dest::RTarget, entrypoints::Vector{MethodDesc})
     for (suffix in c("", .jlr_library_suffixes())) {
       candidate <- paste0(file.path(directory, .jlr_library_basename), suffix)
       tried <- c(tried, candidate)
-      if (file.exists(candidate)) {
+      if (file.exists(candidate) && identical(file.info(candidate)$isdir, FALSE)) {
         return(candidate)
       }
     }
@@ -2076,7 +2132,7 @@ function _write_r_description(path::AbstractString, dest::RTarget)
         println(f, "    shared library through rdyncall and expose its entry points.")
         println(f, "License: MIT + file LICENSE")
         println(f, "Encoding: UTF-8")
-        println(f, "Imports: rdyncall")
+        println(f, "Imports: rdyncall (>= 0.10.0)")
     end
     return path
 end

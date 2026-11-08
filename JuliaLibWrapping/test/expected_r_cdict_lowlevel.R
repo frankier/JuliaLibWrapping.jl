@@ -47,6 +47,12 @@
   base::invisible(NULL)
 }
 
+# Mark decoded bytes explicitly; package metadata does not set the encoding
+# of strings constructed at runtime, especially under non-UTF-8 locales.
+.jlr_decode_utf8 <- function(bytes) {
+  base::`Encoding<-`(base::rawToChar(bytes), "UTF-8")
+}
+
 # A `JLWStatus` message is a NUL-terminated byte buffer. The layout check
 # above guarantees the field is where the library put it.
 .jlr_status_message <- function(status) {
@@ -55,7 +61,7 @@
   if (base::length(nul) > 0L) {
     bytes <- bytes[base::seq_len(nul[[1L]] - 1L)]
   }
-  base::rawToChar(bytes)
+  .jlr_decode_utf8(bytes)
 }
 
 # The R condition class for a `JLWStatus` code. An unknown code is a plain
@@ -117,29 +123,31 @@ rdyncall::cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;",
   .jlr_carrier
 }
 
-.jlr_CString_borrowed_ret <- function(s) {
+.jlr_CString_borrowed_ret <- function(s, .jlr_release = TRUE) {
   .jlr_bytes <- base::raw(base::as.integer(s$length))
+  .jlr_data <- s$data
   for (.jlr_i in base::seq_len(base::length(.jlr_bytes))) {
-    .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(s$data, .jlr_i - 1L, "C"))
+    .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(.jlr_data, .jlr_i - 1L, "C"))
   }
   .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
   if (base::length(.jlr_nul) > 0L) {
     .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
   }
-  base::rawToChar(.jlr_bytes)
+  .jlr_decode_utf8(.jlr_bytes)
 }
 
-.jlr_CString_owned_ret <- function(s) {
-  base::on.exit(.jlr_jlw_free(s$data), add = TRUE)
+.jlr_CString_owned_ret <- function(s, .jlr_release = TRUE) {
+  if (.jlr_release) base::on.exit(.jlr_jlw_free(s$data), add = TRUE)
   .jlr_bytes <- base::raw(base::as.integer(s$length))
+  .jlr_data <- s$data
   for (.jlr_i in base::seq_len(base::length(.jlr_bytes))) {
-    .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(s$data, .jlr_i - 1L, "C"))
+    .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(.jlr_data, .jlr_i - 1L, "C"))
   }
   .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
   if (base::length(.jlr_nul) > 0L) {
     .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
   }
-  base::rawToChar(.jlr_bytes)
+  .jlr_decode_utf8(.jlr_bytes)
 }
 
 .jlr_CDict_borrowed_Float64_arg <- function(x) {
@@ -166,14 +174,16 @@ rdyncall::cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;",
   .jlr_carrier
 }
 
-.jlr_CDict_borrowed_Float64_ret <- function(s) {
+.jlr_CDict_borrowed_Float64_ret <- function(s, .jlr_release = TRUE) {
   .jlr_n <- base::as.integer(s$length)
   .jlr_out <- base::numeric(.jlr_n)
   .jlr_names <- base::character(.jlr_n)
+  .jlr_keys <- s$keys
+  .jlr_values <- s$values
   for (.jlr_i in base::seq_len(.jlr_n)) {
     .jlr_off <- (.jlr_i - 1L) * 16L
-    .jlr_len <- base::as.integer(rdyncall::unpack(s$keys, .jlr_off + 0L, "l"))
-    .jlr_ptr <- rdyncall::unpack(s$keys, .jlr_off + 8L, "p")
+    .jlr_len <- base::as.integer(rdyncall::unpack(.jlr_keys, .jlr_off + 0L, "l"))
+    .jlr_ptr <- rdyncall::unpack(.jlr_keys, .jlr_off + 8L, "p")
     .jlr_bytes <- base::raw(.jlr_len)
     for (.jlr_j in base::seq_len(.jlr_len)) {
       .jlr_bytes[.jlr_j] <- base::as.raw(rdyncall::unpack(.jlr_ptr, .jlr_j - 1L, "C"))
@@ -182,25 +192,27 @@ rdyncall::cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;",
     if (base::length(.jlr_nul) > 0L) {
       .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
     }
-    .jlr_names[.jlr_i] <- base::rawToChar(.jlr_bytes)
-    .jlr_out[.jlr_i] <- rdyncall::unpack(s$values, (.jlr_i - 1L) * 8L, "d")
+    .jlr_names[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes)
+    .jlr_out[.jlr_i] <- rdyncall::unpack(.jlr_values, (.jlr_i - 1L) * 8L, "d")
   }
   base::names(.jlr_out) <- .jlr_names
   .jlr_out
 }
 
-.jlr_CDict_owned_Float64_ret <- function(s) {
-  base::on.exit({
-    .jlr_jlw_free_strings(s$keys, s$length)
-    .jlr_jlw_free(s$values)
-  }, add = TRUE)
+.jlr_CDict_owned_Float64_ret <- function(s, .jlr_release = TRUE) {
+  if (.jlr_release) {
+    base::on.exit(.jlr_jlw_free_strings(s$keys, s$length), add = TRUE)
+    base::on.exit(.jlr_jlw_free(s$values), add = TRUE)
+  }
   .jlr_n <- base::as.integer(s$length)
   .jlr_out <- base::numeric(.jlr_n)
   .jlr_names <- base::character(.jlr_n)
+  .jlr_keys <- s$keys
+  .jlr_values <- s$values
   for (.jlr_i in base::seq_len(.jlr_n)) {
     .jlr_off <- (.jlr_i - 1L) * 16L
-    .jlr_len <- base::as.integer(rdyncall::unpack(s$keys, .jlr_off + 0L, "l"))
-    .jlr_ptr <- rdyncall::unpack(s$keys, .jlr_off + 8L, "p")
+    .jlr_len <- base::as.integer(rdyncall::unpack(.jlr_keys, .jlr_off + 0L, "l"))
+    .jlr_ptr <- rdyncall::unpack(.jlr_keys, .jlr_off + 8L, "p")
     .jlr_bytes <- base::raw(.jlr_len)
     for (.jlr_j in base::seq_len(.jlr_len)) {
       .jlr_bytes[.jlr_j] <- base::as.raw(rdyncall::unpack(.jlr_ptr, .jlr_j - 1L, "C"))
@@ -209,8 +221,8 @@ rdyncall::cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;",
     if (base::length(.jlr_nul) > 0L) {
       .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
     }
-    .jlr_names[.jlr_i] <- base::rawToChar(.jlr_bytes)
-    .jlr_out[.jlr_i] <- rdyncall::unpack(s$values, (.jlr_i - 1L) * 8L, "d")
+    .jlr_names[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes)
+    .jlr_out[.jlr_i] <- rdyncall::unpack(.jlr_values, (.jlr_i - 1L) * 8L, "d")
   }
   base::names(.jlr_out) <- .jlr_names
   .jlr_out
@@ -261,7 +273,7 @@ rdyncall::cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;",
 # `base`, `base<suffix>` that exists, or `NULL`.
 .jlr_library_candidate <- function(base) {
   for (candidate in base::paste0(base, base::c("", .jlr_library_suffixes()))) {
-    if (base::file.exists(candidate)) {
+    if (base::file.exists(candidate) && base::identical(base::file.info(candidate)$isdir, FALSE)) {
       base::return(candidate)
     }
   }
@@ -303,7 +315,7 @@ rdyncall::cstruct("CDict_owned_Float64{l*<CString_owned>*d}length keys values;",
     for (suffix in base::c("", .jlr_library_suffixes())) {
       candidate <- base::paste0(base::file.path(directory, .jlr_library_basename), suffix)
       tried <- base::c(tried, candidate)
-      if (base::file.exists(candidate)) {
+      if (base::file.exists(candidate) && base::identical(base::file.info(candidate)$isdir, FALSE)) {
         base::return(candidate)
       }
     }
