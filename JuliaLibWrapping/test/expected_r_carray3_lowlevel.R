@@ -49,7 +49,12 @@
 
 # Mark decoded bytes explicitly; package metadata does not set the encoding
 # of strings constructed at runtime, especially under non-UTF-8 locales.
-.jlr_decode_utf8 <- function(bytes) {
+# CString is length-prefixed and can contain NUL; R character strings cannot.
+.jlr_decode_utf8 <- function(bytes, context = "CString") {
+  if (base::any(bytes == base::as.raw(0L))) {
+    base::stop(base::sprintf("%s contains an embedded NUL byte; R character strings cannot represent it",
+                 context), call. = FALSE)
+  }
   base::`Encoding<-`(base::rawToChar(bytes), "UTF-8")
 }
 

@@ -946,7 +946,7 @@ end
 # generated `.jlr_` calls intact. In particular, a public `length` or `list`
 # must never replace the corresponding base function inside a helper.
 const _R_BASE_RUNTIME_CALLS = Set(split(
-    "Sys.getenv Sys.info as.character as.double as.integer as.raw assign attr " *
+    "Sys.getenv Sys.info any as.character as.double as.integer as.raw assign attr " *
     "baseenv c charToRaw character dim dirname emptyenv enc2utf8 evalq " *
     "file.exists file.info file.path format get getOption identical inherits invisible is.character " *
     "is.logical is.na is.null is.numeric lapply length list match names " *
@@ -1092,7 +1092,12 @@ function _write_r_status_helpers(f::IO)
     print(
         f, raw"""# Mark decoded bytes explicitly; package metadata does not set the encoding
 # of strings constructed at runtime, especially under non-UTF-8 locales.
-.jlr_decode_utf8 <- function(bytes) {
+# CString is length-prefixed and can contain NUL; R character strings cannot.
+.jlr_decode_utf8 <- function(bytes, context = "CString") {
+  if (any(bytes == as.raw(0L))) {
+    stop(sprintf("%s contains an embedded NUL byte; R character strings cannot represent it",
+                 context), call. = FALSE)
+  }
   base::`Encoding<-`(rawToChar(bytes), "UTF-8")
 }
 
@@ -1429,11 +1434,7 @@ function _write_r_cstring_helpers(
     println(f, "  for (.jlr_i in seq_len(length(.jlr_bytes))) {")
     println(f, "    .jlr_bytes[.jlr_i] <- as.raw(unpack(.jlr_data, .jlr_i - 1L, \"C\"))")
     println(f, "  }")
-    println(f, "  .jlr_nul <- which(.jlr_bytes == as.raw(0L))")
-    println(f, "  if (length(.jlr_nul) > 0L) {")
-    println(f, "    .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]")
-    println(f, "  }")
-    println(f, "  .jlr_decode_utf8(.jlr_bytes)")
+    println(f, "  .jlr_decode_utf8(.jlr_bytes, \"CString return\")")
     println(f, "}")
     println(f)
     return nothing
@@ -1458,10 +1459,6 @@ function _write_r_cstring_element_read(
     println(
         f, indent, "  .jlr_bytes[.jlr_j] <- as.raw(unpack(.jlr_ptr, .jlr_j - 1L, \"C\"))"
     )
-    println(f, indent, "}")
-    println(f, indent, ".jlr_nul <- which(.jlr_bytes == as.raw(0L))")
-    println(f, indent, "if (length(.jlr_nul) > 0L) {")
-    println(f, indent, "  .jlr_bytes <- .jlr_bytes[seq_len(.jlr_nul[[1L]] - 1L)]")
     println(f, indent, "}")
     return nothing
 end
@@ -1509,7 +1506,8 @@ function _write_r_strarray_helpers(
     println(f, "  for (.jlr_i in seq_len(.jlr_n)) {")
     println(f, "    .jlr_off <- (.jlr_i - 1L) * ", size, "L")
     _write_r_cstring_element_read(f, ".jlr_data", layout, "    ")
-    println(f, "    .jlr_out[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes)")
+    println(f, "    .jlr_out[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes,")
+    println(f, "      sprintf(\"CStrArray element %d\", .jlr_i))")
     println(f, "  }")
     println(f, "  .jlr_out")
     println(f, "}")
@@ -1574,7 +1572,8 @@ function _write_r_cdict_helpers(
     println(f, "  for (.jlr_i in seq_len(.jlr_n)) {")
     println(f, "    .jlr_off <- (.jlr_i - 1L) * ", size, "L")
     _write_r_cstring_element_read(f, ".jlr_keys", layout, "    ")
-    println(f, "    .jlr_names[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes)")
+    println(f, "    .jlr_names[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes,")
+    println(f, "      sprintf(\"CDict key %d\", .jlr_i))")
     read = "unpack(.jlr_values, (.jlr_i - 1L) * " * string(binfo.size) * "L, " *
         _r_string(binfo.token) * ")"
     cinfo.value_type == "Bool" && (read *= " != 0L")

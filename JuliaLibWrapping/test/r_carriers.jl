@@ -67,7 +67,16 @@ static CStringO make_owned(const char *v) {
   memcpy(s.data, v, s.length+1); return s;
 }
 
+static CStringO make_owned_bytes(const unsigned char *v, long n) {
+  CStringO s; s.length=n; s.data=(unsigned char*)malloc(n>0?n:1);
+  memcpy(s.data, v, n); return s;
+}
+
 CStringO give_greeting(void) { return make_owned("h\xc3\xa9llo"); }
+CStringO give_nul_string(void) {
+  static const unsigned char bytes[] = {'a', 0, 'b'};
+  return make_owned_bytes(bytes, 3);
+}
 JLWResultCS greet(void) {
   JLWResultCS r; set_status(&r.status,0,""); r.value=give_greeting(); return r;
 }
@@ -79,6 +88,13 @@ long take_strs(CStrArrayB a) {
 CStrArrayO give_strs(void) {
   CStrArrayO a; a.length=2; a.data=(CStringO*)malloc(2*sizeof(CStringO));
   a.data[0]=make_owned("alpha"); a.data[1]=make_owned("beta"); return a;
+}
+
+CStrArrayO give_nul_strs(void) {
+  static const unsigned char bytes[] = {'a', 0, 'b'};
+  CStrArrayO a; a.length=2; a.data=(CStringO*)malloc(2*sizeof(CStringO));
+  a.data[0]=make_owned("safe"); a.data[1]=make_owned_bytes(bytes, 3);
+  return a;
 }
 
 static void fill_dict(CDictO *d, const char **keys, const double *vals, long n) {
@@ -95,6 +111,15 @@ CDictO give_dict(void) {
   static const char *keys[] = {"a","b\xc3\xa9"};
   static const double vals[] = {1.5, -2.0};
   CDictO d; fill_dict(&d, keys, vals, 2); return d;
+}
+
+CDictO give_nul_dict(void) {
+  static const unsigned char bytes[] = {'a', 0, 'b'};
+  CDictO d; d.length=2;
+  d.keys=(CStringO*)malloc(2*sizeof(CStringO));
+  d.values=(double*)malloc(2*sizeof(double));
+  d.keys[0]=make_owned("a"); d.keys[1]=make_owned_bytes(bytes, 3);
+  d.values[0]=1; d.values[1]=2; return d;
 }
 
 JLWResultCD tally(void) {
@@ -236,10 +261,37 @@ chk("UTF-8 string", utf8_greeting, intToUtf8(c(104, 233, 108, 108, 111)))
 chk("UTF-8 encoding", Encoding(utf8_greeting), "UTF-8")
 chk("UTF-8 character count", nchar(utf8_greeting), 5L)
 Sys.setlocale("LC_CTYPE", old_locale)
+check_nul_error <- function(err, location) {
+  if (!inherits(err, "error") ||
+      !grepl(paste0(location, " contains an embedded NUL byte"),
+             conditionMessage(err), fixed = TRUE)) {
+    stop("embedded NUL was not rejected at ", location)
+  }
+}
+so_low <- parent.env(so)
+old_string_free <- so_low$.jlr_jlw_free
+string_frees <- 0L
+so_low$.jlr_jlw_free <- function(p) {
+  string_frees <<- string_frees + 1L
+  old_string_free(p)
+}
+check_nul_error(tryCatch(so$give_nul_string(), error = function(e) e), "CString return")
+chk("NUL string releases allocation", string_frees, 1L)
+so_low$.jlr_jlw_free <- old_string_free
 
 sa <- load_pkg("rcstrarray")
 chk("take_strs", sa$take_strs(c("ab","cde")), 5)
 chk("give_strs", sa$give_strs(), c("alpha","beta"))
+sa_low <- parent.env(sa)
+old_array_free <- sa_low$.jlr_jlw_free_strings
+array_frees <- 0L
+sa_low$.jlr_jlw_free_strings <- function(p, n) {
+  array_frees <<- array_frees + 1L
+  old_array_free(p, n)
+}
+check_nul_error(tryCatch(sa$give_nul_strs(), error = function(e) e), "CStrArray element 2")
+chk("NUL array releases all strings", array_frees, 1L)
+sa_low$.jlr_jlw_free_strings <- old_array_free
 
 d <- load_pkg("rcdict")
 chk("take_dict", d$take_dict(c(a=1.5, bb=-2)), 3)
@@ -250,6 +302,24 @@ utf8_key <- names(d$give_dict())[[2L]]
 chk("UTF-8 dictionary key encoding", Encoding(utf8_key), "UTF-8")
 chk("UTF-8 dictionary key length", nchar(utf8_key), 2L)
 Sys.setlocale("LC_CTYPE", old_locale)
+d_low <- parent.env(d)
+old_key_free <- d_low$.jlr_jlw_free_strings
+old_value_free <- d_low$.jlr_jlw_free
+key_frees <- 0L
+value_frees <- 0L
+d_low$.jlr_jlw_free_strings <- function(p, n) {
+  key_frees <<- key_frees + 1L
+  old_key_free(p, n)
+}
+d_low$.jlr_jlw_free <- function(p) {
+  value_frees <<- value_frees + 1L
+  old_value_free(p)
+}
+check_nul_error(tryCatch(d$give_nul_dict(), error = function(e) e), "CDict key 2")
+chk("NUL dictionary releases keys", key_frees, 1L)
+chk("NUL dictionary releases values", value_frees, 1L)
+d_low$.jlr_jlw_free_strings <- old_key_free
+d_low$.jlr_jlw_free <- old_value_free
 
 di <- load_pkg("rcdictint32")
 chk("take_dict_i32", di$take_dict_i32(c(a=3L, bb=4L)), 7)
@@ -396,8 +466,23 @@ cat("OK\n")
             ),
         )
         mktempdir() do path
+            nul_entrypoints = Dict(
+                "bindinginfo_cstring_owned.json" => ("give_greeting", "give_nul_string"),
+                "bindinginfo_cstrarray.json" => ("give_strs", "give_nul_strs"),
+                "bindinginfo_cdict.json" => ("give_dict", "give_nul_dict"),
+            )
             for (fixture, pkg, lib) in packages
-                write_wrapper(RTarget(path, pkg, lib), read_abi_info(fixture))
+                if haskey(nul_entrypoints, fixture)
+                    data = parsefile(fixture)
+                    original, symbol = nul_entrypoints[fixture]
+                    method = deepcopy(only(f for f in data["functions"] if f["symbol"] == original))
+                    method["symbol"] = symbol
+                    method["name"] = symbol * "()"
+                    push!(data["functions"], method)
+                    write_wrapper(RTarget(path, pkg, lib), parse_abi_info(data))
+                else
+                    write_wrapper(RTarget(path, pkg, lib), read_abi_info(fixture))
+                end
             end
             # Enum and mutates packages need their sidecar metadata.
             enum_meta = JuliaLibWrapping.read_api_metadata("enum.jlw.json")

@@ -49,7 +49,12 @@
 
 # Mark decoded bytes explicitly; package metadata does not set the encoding
 # of strings constructed at runtime, especially under non-UTF-8 locales.
-.jlr_decode_utf8 <- function(bytes) {
+# CString is length-prefixed and can contain NUL; R character strings cannot.
+.jlr_decode_utf8 <- function(bytes, context = "CString") {
+  if (base::any(bytes == base::as.raw(0L))) {
+    base::stop(base::sprintf("%s contains an embedded NUL byte; R character strings cannot represent it",
+                 context), call. = FALSE)
+  }
   base::`Encoding<-`(base::rawToChar(bytes), "UTF-8")
 }
 
@@ -126,11 +131,7 @@ rdyncall::cstruct("JLWResult_CDict_owned_Float64{<JLWStatus><CDict_owned_Float64
   for (.jlr_i in base::seq_len(base::length(.jlr_bytes))) {
     .jlr_bytes[.jlr_i] <- base::as.raw(rdyncall::unpack(.jlr_data, .jlr_i - 1L, "C"))
   }
-  .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
-  if (base::length(.jlr_nul) > 0L) {
-    .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
-  }
-  .jlr_decode_utf8(.jlr_bytes)
+  .jlr_decode_utf8(.jlr_bytes, "CString return")
 }
 
 .jlr_CDict_owned_Float64_ret <- function(s, .jlr_release = TRUE) {
@@ -151,11 +152,8 @@ rdyncall::cstruct("JLWResult_CDict_owned_Float64{<JLWStatus><CDict_owned_Float64
     for (.jlr_j in base::seq_len(.jlr_len)) {
       .jlr_bytes[.jlr_j] <- base::as.raw(rdyncall::unpack(.jlr_ptr, .jlr_j - 1L, "C"))
     }
-    .jlr_nul <- base::which(.jlr_bytes == base::as.raw(0L))
-    if (base::length(.jlr_nul) > 0L) {
-      .jlr_bytes <- .jlr_bytes[base::seq_len(.jlr_nul[[1L]] - 1L)]
-    }
-    .jlr_names[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes)
+    .jlr_names[.jlr_i] <- .jlr_decode_utf8(.jlr_bytes,
+      base::sprintf("CDict key %d", .jlr_i))
     .jlr_out[.jlr_i] <- rdyncall::unpack(.jlr_values, (.jlr_i - 1L) * 8L, "d")
   }
   base::names(.jlr_out) <- .jlr_names

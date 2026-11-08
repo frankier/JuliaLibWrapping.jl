@@ -93,6 +93,12 @@ Tuple returns are converted automatically. A hand-written entrypoint that
 accepts a tuple argument needs a hand-written R wrapper; the generator does
 not build tuple argument carriers.
 
+`CString` is length-prefixed and can contain embedded NUL bytes. R character
+strings cannot represent them, so a generated reader raises an error for an
+embedded NUL in a returned string, string-array element, or dictionary key.
+The library's owned buffers are still released when this happens. If an API
+needs to return arbitrary bytes, expose a byte array instead.
+
 An R matrix is column-major, matching `CArray` storage, so a `Matrix{T}`
 carrier maps directly onto an R `matrix` or `array`, and its dimensions are
 `dim`-attribute values.
