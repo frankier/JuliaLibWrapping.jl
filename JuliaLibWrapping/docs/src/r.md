@@ -112,7 +112,10 @@ mylib::scale(a, factor = 2.0, .in_place = TRUE)
 
 The caller must then not alias `a`: any other binding to the same vector sees
 the write too. `.in_place` begins with a period so it cannot collide with a
-declared keyword.
+declared keyword. In-place calls require matching R storage: `double` for
+`Float64` and `integer` for `Int32`. Other element types need packing, so an
+in-place request raises an error. A regular call returns the values read from
+the written carrier buffer, including when the input needed conversion.
 
 ## Enums
 

@@ -90,7 +90,7 @@ cstruct("CArray_borrowed_Float64_3{l[3]*d}dims data;")
     stop("expected a 3-D array")
   }
   .jlr_dims <- as.integer(dim(x))
-  .jlr_data <- .jlr_extptr(as.double(x))
+  .jlr_data <- .jlr_extptr(if (typeof(x) == "double") x else as.double(x))
   .jlr_carrier <- cdata("CArray_borrowed_Float64_3")
   .jlr_carrier$dims <- .jlr_dims
   .jlr_carrier$data <- .jlr_data

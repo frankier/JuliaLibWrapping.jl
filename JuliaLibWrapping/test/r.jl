@@ -709,9 +709,9 @@ end
     # pointer goes through `.jlr_extptr`, which tolerates a zero-length
     # buffer that `as.externalptr` rejects.
     @test JuliaLibWrapping._r_array_borrow_expr("Float64", "x") ==
-        ".jlr_extptr(as.double(x))"
+        ".jlr_extptr(if (typeof(x) == \"double\") x else as.double(x))"
     @test JuliaLibWrapping._r_array_borrow_expr("Int32", "x") ==
-        ".jlr_extptr(as.integer(x))"
+        ".jlr_extptr(if (typeof(x) == \"integer\") x else as.integer(x))"
     @test JuliaLibWrapping._r_array_borrow_expr("Float32", "x") ==
         ".jlr_extptr(as.floatraw(as.double(x)))"
     @test JuliaLibWrapping._r_array_borrow_expr("UInt8", "x") ==
@@ -918,6 +918,33 @@ end
             actual = read(joinpath(pkgdir, file), String)
             expected = read(joinpath(@__DIR__, golden), String)
             @test actual == expected
+        end
+    end
+
+    # Every packed array type must reject in-place calls, and the copied
+    # result must be read from the carrier passed to the low-level binding.
+    method = only(m for m in abi.entrypoints if m.symbol == "mylib_scale")
+    plan = JuliaLibWrapping._r_facade_plan(
+        method, abi.typeinfo, meta["mylib_scale"]
+    )
+    for eltype in sort!(collect(keys(JuliaLibWrapping._R_BUFFER_TYPES)))
+        arg = merge(plan.args[1], (;
+            carrier = merge(plan.args[1].carrier, (; eltype)),
+            builder = ".jlr_CVector_borrowed_$(eltype)_arg",
+            reader = ".jlr_CVector_borrowed_$(eltype)_ret",
+        ))
+        args = Any[plan.args...]
+        args[1] = arg
+        out = IOBuffer()
+        JuliaLibWrapping._write_r_facade_entry(out, method, merge(plan, (; args)))
+        generated = String(take!(out))
+        @test occursin(".jlr_mutated_1 <- $(arg.builder)(x)", generated)
+        @test occursin("x = $(arg.reader)(.jlr_mutated_1)", generated)
+        if eltype in ("Float64", "Int32")
+            storage = eltype == "Float64" ? "double" : "integer"
+            @test occursin(".in_place && typeof(x) != \"$storage\"", generated)
+        else
+            @test occursin("if (.in_place) stop(", generated)
         end
     end
 end

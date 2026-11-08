@@ -5,11 +5,14 @@
 
 # The C library every generated carrier package in this file calls. Keep it in
 # step with the `bindinginfo_*.json` fixtures each package is emitted from.
+using JSON: parsefile
+
 const _R_CARRIER_C = raw"""
 #include <stdlib.h>
 #include <string.h>
 typedef struct { int code; unsigned char message[256]; } JLWStatus;
 typedef struct { long dims[1]; double *data; } CVectorD;
+typedef struct { long dims[1]; short *data; } CVectorS;
 typedef struct { long dims[3]; double *data; } CArray3;
 typedef struct { long dims[2]; double *data; } CMatrix;
 typedef struct { int length; unsigned char *data; } CStringB;
@@ -174,6 +177,17 @@ JLWResultCDV mylib_scale(CVectorD x, double factor, CStringO label) {
   for (long i = 0; i < n; i++) r.value.data[i] = x.data[i];
   return r;
 }
+
+JLWResultCDV mylib_scale_int16(CVectorS x, double factor, CStringO label) {
+  JLWResultCDV r; set_status(&r.status, 0, "");
+  long n = x.dims[0];
+  short bump = label.length > 0 ? 1 : 0;
+  for (long i = 0; i < n; i++) x.data[i] = (short)(x.data[i] * factor + bump);
+  r.value.dims[0] = n;
+  r.value.data = (double *)malloc((n > 0 ? n : 1) * sizeof(double));
+  for (long i = 0; i < n; i++) r.value.data[i] = x.data[i];
+  return r;
+}
 """
 
 # The R driver: load each generated package into its own environment, resolve
@@ -271,10 +285,42 @@ chk("mutates copy", res$x, c(3, 5, 7))
 chk("mutates original", x, c(1, 2, 3))
 chk("mutates result", res$out, c(3, 5, 7))
 
+# The Float64 builder converts an integer vector to a new double buffer. The
+# copied result must come from that buffer, not from the original integer copy.
+integer_x <- 1:3
+integer_res <- mt$scale(integer_x, 2, "x")
+chk("mutates converted copy", integer_res$x, c(3, 5, 7))
+chk("mutates converted result", integer_res$out, c(3, 5, 7))
+chk("mutates converted original", integer_x, 1:3)
+in_place_error <- tryCatch(mt$scale(integer_x, 2, "x", .in_place = TRUE), error = function(e) e)
+if (!inherits(in_place_error, "error") ||
+    !grepl("requires x to have double storage", conditionMessage(in_place_error), fixed = TRUE)) {
+  stop("converted in-place input was not rejected")
+}
+chk("rejected in-place leaves input unchanged", integer_x, 1:3)
+
 x2 <- c(1, 2, 3)
 out2 <- mt$scale(x2, 2.0, "x", .in_place = TRUE)
 chk("in-place result", out2, c(3, 5, 7))
 chk("in-place write-through", x2, c(3, 5, 7))
+# `as.double(matrix)` drops dimensions and allocates, so the builder must
+# borrow the existing double storage directly for an in-place request.
+matrix_x <- matrix(c(1, 2, 3, 4), nrow = 2)
+mt$scale(matrix_x, 2.0, "x", .in_place = TRUE)
+chk("in-place matrix write-through", matrix_x, matrix(c(3, 5, 7, 9), nrow = 2))
+
+# Int16 always packs to raw storage, even when its input has integer storage.
+packed <- load_pkg("rmutatesint16")
+packed_input <- c(1, 2, 3)
+packed_result <- packed$scale_int16(packed_input, 2, "x")
+chk("packed mutates copy", packed_result$x, c(3L, 5L, 7L))
+chk("packed mutates result", packed_result$out, c(3, 5, 7))
+chk("packed mutates original", packed_input, c(1, 2, 3))
+packed_error <- tryCatch(packed$scale_int16(1:3, 2, "x", .in_place = TRUE), error = function(e) e)
+if (!inherits(packed_error, "error") ||
+    !grepl("requires packing", conditionMessage(packed_error), fixed = TRUE)) {
+  stop("packed in-place input was not rejected")
+}
 cat("OK\n")
 """
 
@@ -331,6 +377,39 @@ cat("OK\n")
                         ],
                         "mutates" => ["x"],
                         "doc" => "Scale `x` in place and return it.",
+                    ),
+                )
+            )
+            # Reuse the scale ABI with a borrowed Int16 input. Its builder
+            # must pack a raw buffer, which the façade reads after the call.
+            packed_abi = parsefile("bindinginfo_api_scale.json")
+            types = packed_abi["types"]
+            insert!(types, 7, Dict{String, Any}(
+                "kind" => "primitive", "name" => "Int16", "id" => 17,
+                "size" => 2, "bits" => 16, "signed" => true, "alignment" => 2,
+            ))
+            insert!(types, 8, Dict{String, Any}(
+                "kind" => "pointer", "name" => "Ptr{Int16}", "id" => 18,
+                "pointee_type_id" => 17,
+            ))
+            borrowed = only(t for t in types if t["id"] == 8)
+            borrowed["name"] = "CVector{:borrowed, Int16}"
+            only(f for f in borrowed["fields"] if f["name"] == "data")["type_id"] = 18
+            method = only(f for f in packed_abi["functions"] if f["symbol"] == "mylib_scale")
+            method["name"] = "mylib_scale_int16(x::CVector{:borrowed, Int16}, factor::Float64, label::CString{:borrowed})"
+            method["symbol"] = "mylib_scale_int16"
+            write_wrapper(
+                RTarget(path, "rmutatesint16", "libmutatesint16"),
+                parse_abi_info(packed_abi);
+                api_metadata = Dict{String, Any}(
+                    "mylib_scale_int16" => Dict{String, Any}(
+                        "name" => "scale_int16",
+                        "args" => ["x"],
+                        "kwargs" => [
+                            Dict{String, Any}("name" => "factor", "default" => 2.0),
+                            Dict{String, Any}("name" => "label"),
+                        ],
+                        "mutates" => ["x"],
                     ),
                 )
             )

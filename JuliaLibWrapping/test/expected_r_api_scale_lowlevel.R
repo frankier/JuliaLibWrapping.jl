@@ -107,7 +107,7 @@ cstruct("JLWResult_CVector_owned_Float64{<JLWStatus><CVector_owned_Float64>}stat
 .jlr_CVector_borrowed_Float64_arg <- function(x) {
   .jlr_n <- length(x)
   .jlr_dims <- as.integer(.jlr_n)
-  .jlr_data <- .jlr_extptr(as.double(x))
+  .jlr_data <- .jlr_extptr(if (typeof(x) == "double") x else as.double(x))
   .jlr_carrier <- cdata("CVector_borrowed_Float64")
   .jlr_carrier$dims <- .jlr_dims
   .jlr_carrier$data <- .jlr_data

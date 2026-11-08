@@ -507,6 +507,7 @@ function _r_classify_arg(
         return (;
             kind = :carrier, carrier = carrier,
             builder = _r_carrier_builder(typedict, type_id, typeinfo),
+            reader = _r_carrier_reader(typedict, type_id, typeinfo),
         )
     end
     if desc isa PointerDesc && _r_call_token(typedict, type_id, typeinfo) !== nothing
@@ -741,8 +742,8 @@ function _r_facade_plan(
     end
 
     # A declaration says which arguments it writes to. The wrapper copies
-    # them for the call and returns the copies, because R's value semantics
-    # would otherwise let a write reach a variable the caller aliases.
+    # them for the call and reads the written carrier back, because preparing
+    # its buffer may convert and allocate even after the copy.
     mutates = Int[]
     for raw in (isnothing(api_entry) ? String[] : get(api_entry, "mutates", String[]))
         i = findfirst(==(String(raw)), declared)
@@ -1205,8 +1206,10 @@ end
 # element type's R vector already has the right C representation, or `nothing`
 # when the buffer must be packed.
 function _r_array_borrow_expr(eltype::AbstractString, source::AbstractString)
-    eltype == "Float64" && return ".jlr_extptr(as.double(" * source * "))"
-    eltype == "Int32" && return ".jlr_extptr(as.integer(" * source * "))"
+    eltype == "Float64" && return ".jlr_extptr(if (typeof(" * source * ") == \"double\") " *
+        source * " else as.double(" * source * "))"
+    eltype == "Int32" && return ".jlr_extptr(if (typeof(" * source * ") == \"integer\") " *
+        source * " else as.integer(" * source * "))"
     eltype == "Float32" &&
         return ".jlr_extptr(as.floatraw(as.double(" * source * ")))"
     eltype == "UInt8" &&
@@ -1848,6 +1851,12 @@ function _r_arg_conversion(arg, name::AbstractString)
     return String(name)
 end
 
+# R storage types that the array builder can pass directly to C. Every other
+# element type is packed, and a mismatched R vector is converted, so neither
+# can honor an in-place request.
+_r_in_place_storage(eltype::AbstractString) =
+    eltype == "Float64" ? "double" : eltype == "Int32" ? "integer" : nothing
+
 # Wrap the low-level call so a carrier return is converted to the R value its
 # reader produces and an enum return to its member name. A `JLWResult` is
 # already unwrapped by the binding.
@@ -1908,28 +1917,46 @@ function _write_r_facade_entry(f::IO, method::MethodDesc, plan)
                 name * " = " * _api_kwarg_default_r(something(default))
         )
     end
-    # A copied argument comes back in the result, unless the caller asks for
-    # the write to reach its own buffer. The leading period keeps `.in_place`
-    # out of the declared keyword namespace.
+    # A copied argument's carrier is read back after the call. The leading
+    # period keeps `.in_place` out of the declared keyword namespace.
     isempty(plan.mutates) || push!(signature, ".in_place = FALSE")
 
     names = vcat(plan.positional, plan.keywords)
     forwarded = [_r_arg_conversion(plan.args[i], name) for (i, name) in pairs(names)]
+    for i in plan.mutates
+        forwarded[i] = ".jlr_mutated_" * string(i)
+    end
     call = lowlevel * "(" * join(forwarded, ", ") * ")"
     println(f, plan.name, " <- function(", join(signature, ", "), ") {")
     if isempty(plan.mutates)
         println(f, "  ", _r_return_conversion(plan.ret, call))
     else
         for i in plan.mutates
+            name = names[i]
+            storage = _r_in_place_storage(plan.args[i].carrier.eltype)
+            if isnothing(storage)
+                println(f, "  if (.in_place) stop(", _r_string(
+                    ".in_place = TRUE is unavailable for $name: its carrier requires packing"
+                ), ", call. = FALSE)")
+            else
+                println(f, "  if (.in_place && typeof(", name, ") != ",
+                    _r_string(storage), ") stop(", _r_string(
+                        ".in_place = TRUE requires $name to have $storage storage"
+                    ), ", call. = FALSE)")
+            end
             println(f, "  if (!.in_place) {")
-            println(f, "    ", names[i], " <- .jlr_copy_buffer(", names[i], ")")
+            println(f, "    ", name, " <- .jlr_copy_buffer(", name, ")")
             println(f, "  }")
+            println(f, "  .jlr_mutated_", i, " <- ", plan.args[i].builder, "(", name, ")")
         end
         println(f, "  .jlr_result <- ", _r_return_conversion(plan.ret, call))
         println(f, "  if (.in_place) {")
         println(f, "    return(.jlr_result)")
         println(f, "  }")
-        parts = String[names[i] * " = " * names[i] for i in plan.mutates]
+        parts = String[
+            names[i] * " = " * plan.args[i].reader * "(.jlr_mutated_" * string(i) * ")"
+                for i in plan.mutates
+        ]
         outputs = _r_result_outputs(plan.ret)
         if length(outputs) == 1
             push!(parts, "out = .jlr_result")
